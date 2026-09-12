@@ -272,14 +272,27 @@ function clearPostManeuverGhost() {
 // extension of the existing selection card — it doesn't introduce a second
 // scene, panel system, or API layer.
 
+// Objects that stay bright in Explore Mode: the selected object, its
+// conjunction partner, and whatever is physically near it right now.
+//
+// This used to be an altitude band (+/-120 km), which reads fine for a small
+// catalog but collapses against a real one -- ~93% of the 10.8k live catalog
+// sits within 120 km of the ISS shell, so almost nothing got dimmed and the
+// "focused" view looked identical to the global one. Straight-line proximity
+// is also what "nearby" actually means when investigating an encounter.
+const NEIGHBOURHOOD_KM = 600;
+
 function computeRelevantIds(selectedObj, conj) {
   const relevant = new Set([selectedObj.catalog_id]);
   if (conj) { relevant.add(conj.primary_object); relevant.add(conj.secondary_object); }
-  const altRef = selectedObj.state?.altitude_km;
-  if (altRef !== undefined) {
-    const BAND_KM = 120;
+  const ref = selectedObj.state?.position_km;
+  if (ref) {
+    const r2 = NEIGHBOURHOOD_KM * NEIGHBOURHOOD_KM;   // compare squared; skip 10k sqrt calls
     for (const o of state.objects) {
-      if (o.state && Math.abs(o.state.altitude_km - altRef) <= BAND_KM) relevant.add(o.catalog_id);
+      const p = o.state?.position_km;
+      if (!p) continue;
+      const dx = p.x - ref.x, dy = p.y - ref.y, dz = p.z - ref.z;
+      if (dx * dx + dy * dy + dz * dz <= r2) relevant.add(o.catalog_id);
     }
   }
   return relevant;
@@ -373,13 +386,15 @@ function renderExploreCard(obj, conj) {
         <div class="sc-conj-title">${icons.alertTriangle} Conjunction Detected</div>
         <div class="sc-conj-grid">
           <div><span class="k">With</span><span class="v">${escapeHtml(otherName || otherId)}</span></div>
-          <div><span class="k">TCA</span><span class="v">${fmtCountdown(mins)}</span></div>
+          <div><span class="k">TCA${mins > 0 ? '' : ' (elapsed)'}</span><span class="v">${fmtCountdown(mins)}</span></div>
           <div><span class="k">Min Separation</span><span class="v">${fmtKm(conj.closest_approach.distance_km)}</span></div>
           <div><span class="k">Rel. Velocity</span><span class="v">${conj.closest_approach.relative_velocity_km_s.toFixed(2)} km/s</span></div>
         </div>
         <button class="btn btn-primary btn-sm sc-goto-pipeline" id="scGotoPipeline">RISK ANALYSIS ${icons.chevronRight}</button>
       </div>`;
-    document.getElementById('tlCaption').textContent = `EXPLORE — ${obj.name} × ${otherName || otherId} — approaching TCA`;
+    document.getElementById('tlCaption').textContent = mins > 0
+      ? `EXPLORE — ${obj.name} × ${otherName || otherId} — approaching TCA`
+      : `EXPLORE — ${obj.name} × ${otherName || otherId} — TCA elapsed, showing screened geometry`;
   } else {
     html += `<div class="sc-conj-block none"><div class="sc-conj-title">${icons.check} No active conjunctions detected</div></div>`;
     document.getElementById('tlCaption').textContent = `EXPLORE — ${obj.name} trajectory playback`;
@@ -457,10 +472,20 @@ function wireTimelineControls() {
   let lastTick = performance.now();
   function loop(now) {
     requestAnimationFrame(loop);
-    const dt = (now - lastTick) / 1000;
+    // Cap the step: a backgrounded tab (or any long hitch) hands back a dt of
+    // seconds, which at 10x would advance the clock by half an hour in one
+    // frame and teleport the playhead.
+    const dt = Math.min((now - lastTick) / 1000, 0.1);
     lastTick = now;
     if (state.playing) {
       let next = state.simMinutes + dt * state.playSpeed * 3;
+      // Never step over an armed TCA. Without this the playhead can clear the
+      // encounter and wrap to 0 in the same frame, so the check below -- which
+      // only ever sees the post-wrap value -- never fires and the approach
+      // loops forever without stopping at closest approach.
+      if (tcaWatch && state.simMinutes <= tcaWatch.tcaMinutes && next > tcaWatch.tcaMinutes) {
+        next = tcaWatch.tcaMinutes;
+      }
       if (next >= 90) next = 0;
       setSimMinutes(next);
     }

@@ -293,6 +293,10 @@ main {
   transition: background 0.12s;
 }
 .cat-row:hover { background: rgba(16,23,42,0.03); }
+.cat-more {
+  padding: 10px 16px; font-family: var(--f-mono); font-size: 10px; line-height: 1.5;
+  color: var(--ink-3); border-top: 1px solid var(--hair); background: rgba(16,23,42,0.02);
+}
 .cat-row.selected { background: var(--cyan-dim); box-shadow: inset 2px 0 0 var(--cyan); }
 .cat-row .r-name { min-width: 0; }
 .cat-row .r-name .nm {

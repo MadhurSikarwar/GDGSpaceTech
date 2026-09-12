@@ -22,6 +22,16 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
+// The whole app (state.js, ConjunctionCandidate.primary_object/secondary_object,
+// and GET /objects/{id}/trajectory) joins on catalog_id -- the NORAD number or
+// SYNTHETIC-99999. `object_id` is an opaque per-row UUID the DB generates, so
+// keying the instanced cloud by it made every click hand back an id that no
+// other part of the app could resolve. Fixtures set both fields to the same
+// value, which is why this only ever broke against the live backend.
+function objectKey(o) {
+  return o.catalog_id ?? o.object_id;
+}
+
 function kmToScene(pos) {
   // TEME z-axis (Earth's rotation axis) -> scene Y (three.js up axis).
   return new THREE.Vector3(pos.x * KM_TO_SCENE, pos.z * KM_TO_SCENE, pos.y * KM_TO_SCENE);
@@ -273,13 +283,23 @@ export function initGlobe(canvas) {
     };
   }
 
-  function computeFraming(scenePos, extra) {
+  // Swing the camera onto the object's own bearing and stand off from it.
+  //
+  // `standoff` is the gap left between the camera and the object's orbital
+  // shell, NOT an absolute radius -- so a LEO target and a GEO target both
+  // end up framed at a comparable on-screen size. EXPLORE_MIN_RADIUS is the
+  // floor that keeps Earth's limb inside a 48deg FOV: drop below it and the
+  // camera ends up inside the debris shell, where nodes balloon into
+  // faceted blobs and Earth degenerates into an unreadable dark wall.
+  const EXPLORE_MIN_RADIUS = 4.8;
+
+  function computeFraming(scenePos, standoff) {
     const dist = scenePos.length();
     if (dist < 1e-6) return { theta: cam.theta, phi: cam.phi, radius: cam.radius };
     const dir = scenePos.clone().divideScalar(dist);
     const theta = Math.atan2(dir.x, dir.z);
     const phi = Math.acos(clamp(dir.y, -1, 1));
-    const radius = clamp(dist + extra, 2.3, MAX_R);
+    const radius = clamp(Math.max(dist + standoff, EXPLORE_MIN_RADIUS), MIN_R, MAX_R);
     return { theta, phi, radius };
   }
 
@@ -327,76 +347,183 @@ export function initGlobe(canvas) {
   }, { passive: false });
 
   // ---- object layer (instanced point cloud, current-state positions) ----
-  const cloudGeo = new THREE.IcosahedronGeometry(0.024, 2);
+  //
+  // Two instanced draw calls, one index space:
+  //   cloudMesh - the solid core. Small, opaque, and the only thing the
+  //               raycaster ever sees, so picking behaviour is unchanged.
+  //   glowMesh  - a camera-facing billboard per object, additively blended
+  //               with a radial falloff, giving the core a halo without
+  //               growing the node itself.
+  //
+  // Instance i refers to the same object in both meshes, and every write
+  // goes through writeInstance() so the two can never drift apart.
+  //
+  // The core geometry is an icosahedron at detail 0 (20 tris) rather than
+  // detail 2 (180 tris). At the few pixels these occupy on screen the two
+  // are indistinguishable, but across a 10k+ catalog it is the difference
+  // between ~1.96M and ~218k triangles per frame.
+  const CORE_RADIUS = 0.019;
+  const cloudGeo = new THREE.IcosahedronGeometry(CORE_RADIUS, 0);
   const cloudMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+
+  // Per-type glow treatment: halo radius in scene units + emissive strength.
+  // Synthetic debris is deliberately the loudest (it is the injected threat);
+  // satellites stay restrained so a full catalog does not turn into a wall
+  // of neon.
+  const GLOW = {
+    SATELLITE:        { halo: 0.040, strength: 0.50 },
+    DEBRIS:           { halo: 0.046, strength: 0.72 },
+    ROCKET_BODY:      { halo: 0.044, strength: 0.58 },
+    SYNTHETIC_DEBRIS: { halo: 0.070, strength: 1.25 },
+    UNKNOWN:          { halo: 0.038, strength: 0.42 },
+  };
+
+  // Explore Mode background treatment -- subdued, deliberately not erased:
+  // the surrounding traffic still has to be readable as context.
+  const DIM = { coreScale: 0.45, coreColor: 0.16, haloScale: 0.4, glow: 0.06 };
+
+  const glowGeo = new THREE.PlaneGeometry(1, 1);
+  const glowMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vColor;
+      void main() {
+        vUv = uv;
+        vColor = instanceColor;
+        // Halo radius is carried as the instance matrix scale, so hiding an
+        // instance (scale 0) collapses the quad and costs no fill.
+        float s = length(instanceMatrix[0].xyz);
+        vec4 mv = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        mv.xy += (uv - 0.5) * 2.0 * s;   // billboard: expand in view space
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vColor;
+      void main() {
+        float d = length(vUv - 0.5) * 2.0;
+        float a = pow(max(0.0, 1.0 - d), 2.6);
+        if (a < 0.012) discard;          // skip the transparent corners
+        gl_FragColor = vec4(vColor * a, a);
+      }`,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+
   let cloudMesh = null;
+  let glowMesh = null;
   let indexToId = [];
   let idToIndex = new Map();
   let objectsById = new Map();
   const hiddenIndices = new Set();
+  const dimmedIds = new Set();
+
+  // Single writer for both meshes. mode: 'normal' | 'hidden' | 'dimmed'.
+  function writeInstance(i, obj, mode) {
+    if (!cloudMesh || !glowMesh) return;
+    const p = obj?.state ? kmToScene(obj.state.position_km) : new THREE.Vector3();
+    const type = obj?.object_type;
+    const g = GLOW[type] ?? GLOW.UNKNOWN;
+    const baseHex = TYPE_COLOR[type] ?? TYPE_COLOR.UNKNOWN;
+
+    const hidden = mode === 'hidden';
+    const dimmed = mode === 'dimmed';
+    // Dimming has to be aggressive to register: Explore also flies the camera
+    // closer, so a mildly dimmed background just reads as "same view, nearer".
+    // The halo is cut hardest -- 10k additive sprites accumulate into a teal
+    // haze long after the individual cores have stopped being legible.
+    const coreScale = hidden ? 0 : (dimmed ? DIM.coreScale : 1);
+    const haloScale = hidden ? 0 : g.halo * (dimmed ? DIM.haloScale : 1);
+
+    dummy.position.copy(p);
+    dummy.scale.setScalar(coreScale);
+    dummy.updateMatrix();
+    cloudMesh.setMatrixAt(i, dummy.matrix);
+    tmpColor.setHex(baseHex);
+    if (dimmed) tmpColor.multiplyScalar(DIM.coreColor);
+    cloudMesh.setColorAt(i, tmpColor);
+
+    dummy.scale.setScalar(haloScale);
+    dummy.updateMatrix();
+    glowMesh.setMatrixAt(i, dummy.matrix);
+    tmpColor.setHex(baseHex).multiplyScalar(g.strength * (dimmed ? DIM.glow : 1));
+    glowMesh.setColorAt(i, tmpColor);
+  }
+
+  function flushInstances() {
+    if (!cloudMesh || !glowMesh) return;
+    cloudMesh.instanceMatrix.needsUpdate = true;
+    glowMesh.instanceMatrix.needsUpdate = true;
+    if (cloudMesh.instanceColor) cloudMesh.instanceColor.needsUpdate = true;
+    if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
+  }
+
+  function modeFor(objectId) {
+    if (hiddenIndices.has(objectId)) return 'hidden';
+    if (dimmedIds.has(objectId)) return 'dimmed';
+    return 'normal';
+  }
+
+  function disposeCloud() {
+    if (cloudMesh) { scene.remove(cloudMesh); cloudMesh.dispose(); cloudMesh = null; }
+    if (glowMesh) { scene.remove(glowMesh); glowMesh.dispose(); glowMesh = null; }
+  }
 
   function rebuildCloud(objects) {
-    if (cloudMesh) { scene.remove(cloudMesh); cloudMesh.geometry.dispose?.(); }
-    indexToId = objects.map((o) => o.object_id);
+    // Geometries and materials are module-level and reused across rebuilds;
+    // only the per-instance buffers are recreated here.
+    disposeCloud();
+    indexToId = objects.map(objectKey);
     idToIndex = new Map(indexToId.map((id, i) => [id, i]));
-    objectsById = new Map(objects.map((o) => [o.object_id, o]));
+    objectsById = new Map(objects.map((o) => [objectKey(o), o]));
     hiddenIndices.clear();
-    if (!objects.length) { cloudMesh = null; return; }
+    dimmedIds.clear();
+    if (!objects.length) return;
 
     cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, objects.length);
-    objects.forEach((o, i) => {
-      const p = o.state ? kmToScene(o.state.position_km) : new THREE.Vector3();
-      dummy.position.copy(p);
-      dummy.scale.setScalar(1);
-      dummy.updateMatrix();
-      cloudMesh.setMatrixAt(i, dummy.matrix);
-      cloudMesh.setColorAt(i, tmpColor.setHex(TYPE_COLOR[o.object_type] ?? TYPE_COLOR.UNKNOWN));
-    });
-    cloudMesh.instanceMatrix.needsUpdate = true;
-    if (cloudMesh.instanceColor) cloudMesh.instanceColor.needsUpdate = true;
+    glowMesh = new THREE.InstancedMesh(glowGeo, glowMat, objects.length);
+    // The halo is expanded in the vertex shader, which the CPU-side bounding
+    // sphere cannot know about, so skip culling rather than risk pop-out.
+    // The cloud spans the whole scene either way.
+    glowMesh.frustumCulled = false;
+    // Picking stays entirely on the solid core.
+    glowMesh.raycast = () => {};
+
+    objects.forEach((o, i) => writeInstance(i, o, 'normal'));
+    flushInstances();
+    scene.add(glowMesh);
     scene.add(cloudMesh);
   }
 
   function setInstanceHidden(objectId, hidden) {
     const i = idToIndex.get(objectId);
     if (i === undefined || !cloudMesh) return;
-    const obj = objectsById.get(objectId);
-    const p = obj?.state ? kmToScene(obj.state.position_km) : new THREE.Vector3();
-    dummy.position.copy(p);
-    dummy.scale.setScalar(hidden ? 0 : 1);
-    dummy.updateMatrix();
-    cloudMesh.setMatrixAt(i, dummy.matrix);
-    cloudMesh.instanceMatrix.needsUpdate = true;
     if (hidden) hiddenIndices.add(objectId); else hiddenIndices.delete(objectId);
+    writeInstance(i, objectsById.get(objectId), modeFor(objectId));
+    flushInstances();
   }
 
-  // ---- Explore Mode relevance dimming: reuses the same per-instance
-  // matrix/color update as setInstanceHidden above, just with a partial
-  // scale/color reduction instead of a full hide. ----
+  // ---- Explore Mode relevance dimming: same per-instance write as above,
+  // just with a partial scale/colour reduction instead of a full hide. ----
   function applyRelevance(objectId, dimmed) {
     const i = idToIndex.get(objectId);
     if (i === undefined || !cloudMesh) return;
-    if (hiddenIndices.has(objectId)) return; // already hidden as a focused marker; leave it
-    const obj = objectsById.get(objectId);
-    const p = obj?.state ? kmToScene(obj.state.position_km) : new THREE.Vector3();
-    dummy.position.copy(p);
-    dummy.scale.setScalar(dimmed ? 0.55 : 1);
-    dummy.updateMatrix();
-    cloudMesh.setMatrixAt(i, dummy.matrix);
-    const baseHex = TYPE_COLOR[obj?.object_type] ?? TYPE_COLOR.UNKNOWN;
-    tmpColor.setHex(baseHex);
-    if (dimmed) tmpColor.multiplyScalar(0.32);
-    cloudMesh.setColorAt(i, tmpColor);
-    cloudMesh.instanceMatrix.needsUpdate = true;
-    if (cloudMesh.instanceColor) cloudMesh.instanceColor.needsUpdate = true;
+    if (hiddenIndices.has(objectId)) return; // focused marker owns it; leave it
+    if (dimmed) dimmedIds.add(objectId); else dimmedIds.delete(objectId);
+    writeInstance(i, objectsById.get(objectId), modeFor(objectId));
   }
 
   function setRelevance(relevantIds) {
     for (const id of indexToId) applyRelevance(id, !relevantIds.has(id));
+    flushInstances();
   }
 
   function clearRelevance() {
-    for (const id of indexToId) applyRelevance(id, false);
+    if (!dimmedIds.size) return;
+    for (const id of [...dimmedIds]) applyRelevance(id, false);
+    flushInstances();
   }
 
   // ---- focused objects: bright marker + trajectory line, animated by sim time ----
@@ -462,20 +589,82 @@ export function initGlobe(canvas) {
     return entry;
   }
 
+  // Trajectories are re-selected constantly (every catalog click re-enters
+  // this path), so every per-selection object is explicitly disposed rather
+  // than just detached -- otherwise each click leaks a line buffer.
+  function disposeTrajectoryVisuals(entry) {
+    if (entry.line) {
+      focusGroup.remove(entry.line);
+      entry.line.geometry.dispose();
+      entry.line.material.dispose();
+      entry.line = null;
+    }
+    if (entry.arrows) {
+      focusGroup.remove(entry.arrows);
+      entry.arrows.dispose();
+      entry.arrows.material.dispose();
+      entry.arrows = null;
+    }
+  }
+
   function unfocusObject(objectId) {
     const entry = focused.get(objectId);
     if (!entry) return;
     focusGroup.remove(entry.marker);
+    entry.marker.geometry.dispose();
+    entry.marker.material.dispose();
     focusGroup.remove(entry.ring);
-    if (entry.line) focusGroup.remove(entry.line);
+    entry.ring.material.map?.dispose();
+    entry.ring.material.dispose();
+    disposeTrajectoryVisuals(entry);
     setInstanceHidden(objectId, false);
     focused.delete(objectId);
+  }
+
+  // ---- direction of travel ----
+  // The gradient along the trajectory line already encodes time progression,
+  // but it does not say which way the object is going when playback is
+  // paused. These are small cones sampled along the path and oriented down
+  // the local tangent, brightening toward the future end of the track.
+  // One instanced draw call of ~14 cones per focused object.
+  const ARROW_COUNT = 14;
+  const arrowGeo = new THREE.ConeGeometry(0.011, 0.032, 6);
+  const CONE_AXIS = new THREE.Vector3(0, 1, 0); // ConeGeometry points +Y
+  const arrowQuat = new THREE.Quaternion();
+  const arrowTangent = new THREE.Vector3();
+
+  function buildDirectionArrows(pts, baseColor) {
+    if (pts.length < 4) return null;
+    const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.75, toneMapped: false });
+    const mesh = new THREE.InstancedMesh(arrowGeo, mat, ARROW_COUNT);
+    mesh.frustumCulled = false;
+    mesh.raycast = () => {};   // never steal a click from an object
+    const dim = baseColor.clone().multiplyScalar(0.35);
+    for (let a = 0; a < ARROW_COUNT; a++) {
+      // skip the very ends so arrows don't sit on top of the marker
+      const t = (a + 0.5) / ARROW_COUNT;
+      const i = Math.min(pts.length - 2, Math.floor(t * (pts.length - 1)));
+      arrowTangent.subVectors(pts[i + 1], pts[i]);
+      if (arrowTangent.lengthSq() < 1e-12) continue;
+      arrowTangent.normalize();
+      arrowQuat.setFromUnitVectors(CONE_AXIS, arrowTangent);
+      dummy.position.copy(pts[i]);
+      dummy.quaternion.copy(arrowQuat);
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(a, dummy.matrix);
+      mesh.setColorAt(a, tmpColor.copy(dim).lerp(baseColor, t));
+    }
+    dummy.quaternion.identity();   // leave the shared dummy neutral
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    return mesh;
   }
 
   function setFocusTrajectory(objectId, trajectoryPoints, colorHex) {
     const entry = focusObject(objectId, colorHex);
     entry.trajectory = trajectoryPoints;
-    if (entry.line) focusGroup.remove(entry.line);
+    disposeTrajectoryVisuals(entry);
 
     const pts = trajectoryPoints.map((p) => kmToScene({ x: p.x, y: p.y, z: p.z }));
     const geo = new THREE.BufferGeometry().setFromPoints(pts);
@@ -491,6 +680,8 @@ export function initGlobe(canvas) {
     const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, toneMapped: false });
     entry.line = new THREE.Line(geo, mat);
     focusGroup.add(entry.line);
+    entry.arrows = buildDirectionArrows(pts, base);
+    if (entry.arrows) focusGroup.add(entry.arrows);
     positionEntry(entry);
   }
 
@@ -664,12 +855,12 @@ export function initGlobe(canvas) {
 
     // ---- Explore Mode: cinematic framing + relevance dimming ----
     exploreObject(scenePos, opts = {}) {
-      const f = computeFraming(scenePos, 1.1);
+      const f = computeFraming(scenePos, 3.2);
       startFlight(f.theta, f.phi, f.radius, opts.duration ?? 1800, opts.onDone);
     },
     exploreConjunction(scenePosA, scenePosB, opts = {}) {
       const mid = scenePosA.clone().add(scenePosB).multiplyScalar(0.5);
-      const f = computeFraming(mid, 0.75);
+      const f = computeFraming(mid, 2.9);
       startFlight(f.theta, f.phi, f.radius, opts.duration ?? 2000, opts.onDone);
     },
     returnToGlobal(duration = 1500, onDone) {

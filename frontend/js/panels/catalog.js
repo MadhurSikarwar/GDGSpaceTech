@@ -44,6 +44,8 @@ function filteredObjects() {
   });
 }
 
+const RENDER_LIMIT = 200;
+
 function renderList() {
   const container = document.getElementById('catalogList');
   document.getElementById('catalogCount').textContent = `${state.objects.length} OBJECT${state.objects.length === 1 ? '' : 'S'}`;
@@ -70,7 +72,14 @@ function renderList() {
     return;
   }
 
-  container.innerHTML = items.map((o) => {
+  // Only the first RENDER_LIMIT matches are put in the DOM. The live catalog
+  // is ~10.9k objects, and building that many rows costs ~1.5s of blocked
+  // main thread -- paid again on every keystroke, since input re-renders the
+  // list. Filtering and search still run across the whole catalog; this caps
+  // only what is materialised, and the footer says so when it truncates.
+  const shown = items.length > RENDER_LIMIT ? items.slice(0, RENDER_LIMIT) : items;
+
+  container.innerHTML = shown.map((o) => {
     const age = relativeAge(o.data_quality?.data_age_hours);
     const alt = o.state?.altitude_km !== undefined ? fmtNum(o.state.altitude_km, 0) : '—';
     const selected = o.catalog_id === state.selectedObjectId;
@@ -83,7 +92,9 @@ function renderList() {
         <span class="r-alt">${alt}</span>
         <span class="r-age ${age.cls}">${age.text}</span>
       </div>`;
-  }).join('');
+  }).join('') + (items.length > RENDER_LIMIT
+    ? `<div class="cat-more">Showing ${RENDER_LIMIT} of ${items.length} matches — refine the search to narrow it down.</div>`
+    : '');
 
   highlightSelection();
 }
