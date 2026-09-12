@@ -6,7 +6,7 @@ import { initCatalog } from './panels/catalog.js';
 import { initConjunctions } from './panels/conjunctions.js';
 import { initPipeline, openConjunction } from './panels/pipeline.js';
 import { icons } from './icons.js';
-import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml } from './utils.js';
+import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml, fmtRelVel } from './utils.js';
 
 const TYPE_COLOR_HEX = { SATELLITE: 0x56e3d1, DEBRIS: 0xf0a94e, ROCKET_BODY: 0xa99bf2, SYNTHETIC_DEBRIS: 0xf0616e, UNKNOWN: 0x8a95a8 };
 const PRIMARY_COLOR = 0x56e3d1;
@@ -136,11 +136,20 @@ function wireGlobeCallbacks() {
 
 function wireSelectionCard() {
   document.getElementById('scExploreIcon').innerHTML = icons.fly;
+  const injectIcon = document.getElementById('scInjectIcon');
+  if (injectIcon) injectIcon.innerHTML = icons.alertTriangle;
+
   document.getElementById('scClose').addEventListener('click', () => {
     if (state.explore.active) handleExitExplore();
     else clearSelection();
   });
   document.getElementById('scExploreBtn').addEventListener('click', handleExplore);
+  const injectBtn = document.getElementById('scInjectBtn');
+  if (injectBtn) {
+    injectBtn.addEventListener('click', () => {
+      if (singleSelectedId) handleInjectOnTarget(singleSelectedId);
+    });
+  }
   document.getElementById('scExplore').addEventListener('click', (e) => {
     if (e.target.closest('#scBackLink')) handleExitExplore();
     if (e.target.closest('#scGotoPipeline')) {
@@ -211,6 +220,16 @@ function renderSelectionCard(obj) {
     ? `POS  ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)} km<br/>VEL  ${vel.x.toFixed(2)}, ${vel.y.toFixed(2)}, ${vel.z.toFixed(2)} km/s`
     : 'No state vector available.';
   document.getElementById('scTrajStatus').textContent = 'Loading 90-min trajectory…';
+  const injectBtn = document.getElementById('scInjectBtn');
+  if (injectBtn) {
+    if (obj.object_type === 'DEBRIS' || obj.object_type === 'SYNTHETIC_DEBRIS') {
+      injectBtn.textContent = 'DEBRIS TARGET';
+      injectBtn.disabled = true;
+    } else {
+      injectBtn.innerHTML = `<span id="scInjectIcon">${icons.alertTriangle}</span> + INJECT DEBRIS`;
+      injectBtn.disabled = false;
+    }
+  }
 }
 
 function nearestPointAtTime(trajectory, isoTime) {
@@ -388,7 +407,7 @@ function renderExploreCard(obj, conj) {
           <div><span class="k">With</span><span class="v">${escapeHtml(otherName || otherId)}</span></div>
           <div><span class="k">TCA${mins > 0 ? '' : ' (elapsed)'}</span><span class="v">${fmtCountdown(mins)}</span></div>
           <div><span class="k">Min Separation</span><span class="v">${fmtKm(conj.closest_approach.distance_km)}</span></div>
-          <div><span class="k">Rel. Velocity</span><span class="v">${conj.closest_approach.relative_velocity_km_s.toFixed(2)} km/s</span></div>
+          <div><span class="k">Rel. Velocity</span><span class="v">${fmtRelVel(conj.closest_approach.relative_velocity_km_s)}</span></div>
         </div>
         <button class="btn btn-primary btn-sm sc-goto-pipeline" id="scGotoPipeline">RISK ANALYSIS ${icons.chevronRight}</button>
       </div>`;
@@ -553,41 +572,65 @@ function handleOpenConjunction(conjId) {
   openConjunction(conjId, true);
 }
 
-async function handleDemoInject() {
-  const btn = document.getElementById('demoBtn');
-  btn.disabled = true;
-  toast('INJECTING SYNTHETIC DEBRIS', 'Anchoring a verified close-approach scenario to ISS (25544)…', 'warn');
-  pushLog('Demo trigger: injecting synthetic debris near ISS (25544)…', 'warn');
+async function handleInjectOnTarget(targetCatalogId) {
+  const targetObj = findByCatalogId(targetCatalogId);
+  const targetName = targetObj?.name || targetCatalogId;
+
+  const topBtn = document.getElementById('demoBtn');
+  const cardBtn = document.getElementById('scInjectBtn');
+  if (topBtn) topBtn.disabled = true;
+  if (cardBtn) {
+    cardBtn.disabled = true;
+    cardBtn.innerHTML = `<span class="spin" style="width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;display:inline-block"></span> INJECTING…`;
+  }
+
+  toast('INJECTING SYNTHETIC DEBRIS', `Simulating physical orbital encounter with ${targetName}…`, 'warn');
+  pushLog(`Demo trigger: injecting synthetic debris targeting ${targetName} (${targetCatalogId})…`, 'warn');
+
   try {
-    const result = await api.injectSyntheticDebris('25544');
-    pushLog(`Synthetic object ${result.synthetic_object_id} injected — ${result.conjunctions_detected} conjunction(s) detected.`, 'ok');
+    const result = await api.injectSyntheticDebris(targetCatalogId);
+    pushLog(`Synthetic object ${result.synthetic_object_id} injected targeting ${targetName} — encounter detected.`, 'ok');
+
+    // Refresh both objects (to render new synthetic debris) and all accumulated conjunctions
     await Promise.all([loadObjects(), loadConjunctions()]);
+
     const newConj = result.conjunction_candidates?.[0]
       || state.conjunctions.find((c) => c.secondary_object === result.synthetic_object_id);
+
     if (newConj) {
-      if (state.explore.active && state.explore.objectId === '25544') {
-        // Already investigating ISS in Explore Mode — update the analysis
-        // in place instead of leaving the 3D view for the pipeline.
-        toast('CONJUNCTION DETECTED', 'Updating orbital analysis…', 'crit');
-        const iss = findByCatalogId('25544');
-        if (iss) applyConjunctionToExplore(iss, newConj);
-      } else {
-        toast('CONJUNCTION DETECTED', 'Opening the decision pipeline…', 'crit');
-        setTimeout(() => {
-          setView('pipeline');
-          openConjunction(newConj.conjunction_id, true);
-        }, 700);
+      const dist = newConj.closest_approach?.distance_km != null ? `${newConj.closest_approach.distance_km.toFixed(1)} km` : '';
+      toast('CONJUNCTION DETECTED', `${targetName} × ${newConj.secondary_object_name || newConj.secondary_object} (${dist})`, 'crit');
+
+      if (state.explore.active) {
+        handleExitExplore();
       }
+
+      // Automatically switch to the PIPELINE tab and run/display the pipeline for this conjunction
+      setTimeout(() => {
+        setView('pipeline');
+        openConjunction(newConj.conjunction_id, true);
+      }, 600);
     } else {
-      toast('SYNTHETIC DEBRIS INJECTED', 'No conjunction returned — check the Conjunctions tab.', 'warn');
+      toast('SYNTHETIC DEBRIS INJECTED', 'Check the Conjunctions tab.', 'warn');
     }
   } catch (err) {
     console.error(err);
     toast('DEMO INJECTION FAILED', 'Tracking service unreachable at :8000. Start the backend and retry.', 'crit');
     pushLog('Demo injection failed — tracking service unreachable.', 'crit');
   } finally {
-    btn.disabled = false;
+    if (topBtn) topBtn.disabled = false;
+    if (cardBtn) {
+      cardBtn.disabled = false;
+      cardBtn.innerHTML = `<span id="scInjectIcon">${icons.alertTriangle}</span> + INJECT DEBRIS`;
+    }
   }
+}
+
+async function handleDemoInject() {
+  // If a satellite is currently selected, inject debris targeting that satellite!
+  // Otherwise, default to ISS 25544.
+  const targetId = singleSelectedId || '25544';
+  await handleInjectOnTarget(targetId);
 }
 
 async function handleApprove(conj, maneuver) {

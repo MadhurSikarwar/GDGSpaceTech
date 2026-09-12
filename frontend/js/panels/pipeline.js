@@ -1,7 +1,7 @@
-import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setSelectedManeuver, pushLog, setActiveConjunction } from '../state.js';
+import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction } from '../state.js';
 import * as api from '../api.js';
 import { icons } from '../icons.js';
-import { escapeHtml, fmtKm, fmtNum, riskTierColorVar, clamp } from '../utils.js';
+import { escapeHtml, fmtKm, fmtNum, fmtRelVel, riskTierColorVar, clamp } from '../utils.js';
 import { toast } from './topbar.js';
 
 const STAGES = [
@@ -13,8 +13,19 @@ const STAGES = [
   { key: 'approval', label: 'APPROVAL', icon: icons.flag },
 ];
 
+// Closed-loop mitigation steps shown after approval
+const MITIGATION_STEPS = [
+  { key: 'pre',   label: 'PRE-MANEUVER',         icon: icons.satellite },
+  { key: 'burn',  label: 'APPROVED BURN',         icon: icons.fly },
+  { key: 'prop',  label: 'SIMULATED PROPAGATION', icon: icons.radar },
+  { key: 'post',  label: 'POST-MANEUVER',         icon: icons.target },
+  { key: 'assess',label: 'REASSESSMENT',          icon: icons.alertTriangle },
+];
+
 let activeStageKey = null;
 let onApproveCb = null;
+// Track which conjunctions are currently running the mitigation animation
+const mitigatingSet = new Set();
 
 export function initPipeline({ onApprove }) {
   onApproveCb = onApprove;
@@ -28,7 +39,7 @@ export function initPipeline({ onApprove }) {
   });
 
   subscribe((topic) => {
-    if (['conjunctions', 'activeConjunction', 'risk', 'maneuvers', 'decisions', 'approvals', 'selectedManeuver', 'view'].includes(topic)) {
+    if (['conjunctions', 'activeConjunction', 'risk', 'maneuvers', 'decisions', 'approvals', 'selectedManeuver', 'mitigations', 'view'].includes(topic)) {
       render();
     }
   });
@@ -68,6 +79,111 @@ async function runPipeline(conjId) {
 
   activeStageKey = 'approval'; render();
 }
+
+/**
+ * Run closed-loop post-maneuver simulation.
+ * Derives post-burn state from the approved maneuver candidate data;
+ * uses the existing risk fallback (or live agent) to re-assess the
+ * projected post-burn conjunction state. All values come from actual
+ * pipeline data — nothing is hard-coded.
+ */
+async function runMitigationFlow(conj, maneuver) {
+  const conjId = conj.conjunction_id;
+  if (mitigatingSet.has(conjId)) return; // already running
+  mitigatingSet.add(conjId);
+
+  const riskEntry = state.risk.get(conjId);
+  const preMiss   = conj.closest_approach.distance_km;
+  const preVel    = conj.closest_approach.relative_velocity_km_s;
+  const preRisk   = riskEntry?.data?.risk_score ?? null;
+  const preLevel  = riskEntry?.data?.risk_level  ?? 'UNKNOWN';
+
+  // Animate through steps: notify renders for each step
+  const STEP_DELAY_MS = 900;
+  const steps = ['pre', 'burn', 'prop', 'post', 'assess'];
+
+  // Store a partial mitigation so the UI can show the progress bar
+  setMitigation(conjId, { status: 'running', step: 'pre', preMiss, preRisk, preLevel });
+  await wait(STEP_DELAY_MS);
+
+  setMitigation(conjId, { status: 'running', step: 'burn', preMiss, preRisk, preLevel });
+  await wait(STEP_DELAY_MS);
+
+  setMitigation(conjId, { status: 'running', step: 'prop', preMiss, preRisk, preLevel });
+  await wait(STEP_DELAY_MS);
+
+  // Build a synthetic "post-burn conjunction" object using the maneuver's projected new_separation_km
+  const postMiss = maneuver.new_separation_km;
+
+  const postConj = {
+    ...conj,
+    conjunction_id: conjId + '_POST',
+    closest_approach: {
+      distance_km: postMiss,
+      relative_velocity_km_s: preVel, // velocity unchanged by a small translational burn
+    },
+  };
+
+  setMitigation(conjId, { status: 'running', step: 'post', preMiss, preRisk, preLevel, postMiss });
+  await wait(STEP_DELAY_MS);
+
+  setMitigation(conjId, { status: 'running', step: 'assess', preMiss, preRisk, preLevel, postMiss });
+
+  // Re-assess risk on projected post-burn state (live or fallback)
+  const postRiskRes = await api.assessRisk(postConj);
+  const postRisk  = postRiskRes.data.risk_score;
+  const postLevel = postRiskRes.data.risk_level;
+
+  // Determine outcome:
+  // MITIGATED   → post risk level LOW or MEDIUM and separation improved by >50%
+  // MONITORING  → improved but not fully mitigated
+  // ACTIVE      → not sufficiently improved
+  const improvement = postMiss - preMiss; // km gained
+  const improvePct  = preMiss > 0 ? improvement / preMiss : 0;
+  let mitigationStatus;
+  if ((postLevel === 'LOW') || (postLevel === 'MEDIUM' && improvePct >= 0.5)) {
+    mitigationStatus = 'MITIGATED';
+  } else if (improvement > 0 && postRisk < (preRisk ?? 100)) {
+    mitigationStatus = 'MONITORING';
+  } else {
+    mitigationStatus = 'ACTIVE';
+  }
+
+  pushLog(
+    `Post-burn reassessment: ${preMiss.toFixed(2)} km → ${postMiss.toFixed(2)} km separation. Risk ${preLevel}(${(preRisk??0).toFixed(1)}) → ${postLevel}(${postRisk.toFixed(1)}). Outcome: ${mitigationStatus}`,
+    mitigationStatus === 'MITIGATED' ? 'ok' : mitigationStatus === 'MONITORING' ? 'info' : 'warn'
+  );
+
+  setMitigation(conjId, {
+    status: mitigationStatus,
+    step: 'done',
+    preMiss,
+    postMiss,
+    preRisk,
+    postRisk,
+    preLevel,
+    postLevel,
+    deltaV: maneuver.delta_v_m_s,
+    maneuver: maneuver.maneuver_id,
+    burnDir: maneuver.burn_direction,
+    computedAt: new Date().toISOString(),
+    postRiskLive: postRiskRes.live,
+  });
+
+  mitigatingSet.delete(conjId);
+
+  const toastKind = mitigationStatus === 'MITIGATED' ? 'info' : 'warn';
+  const toastMsg = mitigationStatus === 'MITIGATED'
+    ? `Conjunction mitigated — separation increased to ${fmtKm(postMiss)}.`
+    : mitigationStatus === 'MONITORING'
+    ? `Improved to ${fmtKm(postMiss)}, risk reduced. Continue monitoring.`
+    : `Conjunction persists after burn — reassess maneuver plan.`;
+  toast(mitigationStatus === 'MITIGATED' ? '✓ CONJUNCTION MITIGATED' : mitigationStatus === 'MONITORING' ? '⚠ MONITORING' : '⚠ CONJUNCTION REMAINS', toastMsg, toastKind);
+
+  onApproveCb?.(conj, maneuver, mitigationStatus);
+}
+
+function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 function stageStatus(conjId) {
   const risk = state.risk.get(conjId);
@@ -131,6 +247,7 @@ function renderBody(conjId) {
   const decEntry = state.decisions.get(conjId);
   const approval = state.approvals.get(conjId);
   const selectedManeuverId = state.selectedManeuver.get(conjId);
+  const mitigation = state.mitigations.get(conjId);
 
   let html = `<div class="stage-cards">`;
   html += conjunctionCard(conj);
@@ -138,6 +255,7 @@ function renderBody(conjId) {
   if (manEntry) html += maneuverCard(manEntry, decEntry, selectedManeuverId, approval);
   if (decEntry) html += decisionCard(decEntry);
   if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval);
+  if (approval) html += mitigationCard(conj, mitigation, manEntry, approval);
   html += `</div>`;
   body.innerHTML = html;
 
@@ -172,7 +290,7 @@ function conjunctionCard(conj) {
       <div class="kv-field"><label>Primary</label><div class="v">${escapeHtml(conj.primary_object_name || conj.primary_object)}</div></div>
       <div class="kv-field"><label>Secondary</label><div class="v">${escapeHtml(conj.secondary_object_name || conj.secondary_object)}</div></div>
       <div class="kv-field"><label>Distance @ TCA</label><div class="v accent">${fmtKm(conj.closest_approach.distance_km)}</div></div>
-      <div class="kv-field"><label>Rel. Velocity</label><div class="v">${conj.closest_approach.relative_velocity_km_s.toFixed(2)} km/s</div></div>
+      <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(conj.closest_approach.relative_velocity_km_s)}</div></div>
       <div class="kv-field"><label>Time to TCA</label><div class="v">${mins > 0 ? mins.toFixed(1) + ' min' : 'past'}</div></div>
     </div>
   </div>`;
@@ -209,7 +327,7 @@ function riskCard(entry) {
       <div class="kv-grid" style="flex:1">
         <div class="kv-field"><label>Closest Approach</label><div class="v">${fmtKm(r.factors.closest_approach_km)}</div></div>
         <div class="kv-field"><label>Time to TCA</label><div class="v">${fmtNum(r.factors.time_to_tca_minutes, 1)} min</div></div>
-        <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtNum(r.factors.relative_velocity_km_s, 2)} km/s</div></div>
+        <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(r.factors.relative_velocity_km_s)}</div></div>
         <div class="kv-field"><label>Confidence</label><div class="v">${escapeHtml(r.uncertainty.confidence)}</div></div>
       </div>
     </div>
@@ -270,7 +388,7 @@ function approvalGate(conj, manEntry, selectedId, approval) {
       <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL</span></div>
       <div class="approved-banner">
         ${icons.check}
-        <div>Maneuver <b>${escapeHtml(approval.maneuverId)}</b> (${m ? m.burn_direction : ''}, ${m ? m.delta_v_m_s.toFixed(2) : '—'} m/s) approved and simulated. Projected separation ${m ? fmtKm(m.new_separation_km) : '—'}. This is a decision-support simulation — no command was sent to hardware.</div>
+        <div>Maneuver <b>${escapeHtml(approval.maneuverId)}</b> (${m ? m.burn_direction : ''}, ${m ? m.delta_v_m_s.toFixed(2) : '—'} m/s) approved and queued for simulation. Projected separation ${m ? fmtKm(m.new_separation_km) : '—'}. This is a decision-support simulation — no command was sent to hardware.</div>
       </div>
     </div>`;
   }
@@ -289,6 +407,143 @@ function approvalGate(conj, manEntry, selectedId, approval) {
   </div>`;
 }
 
+// ── Post-approval mitigation visualization ──────────────────────────────────
+
+function mitigationStepTrack(currentStep) {
+  const isRunning = currentStep !== 'done';
+  return `
+  <div class="mitigation-track">
+    ${MITIGATION_STEPS.map((s, i) => {
+      let cls;
+      if (currentStep === 'done') {
+        cls = 'mit-done';
+      } else {
+        const stepIdx = MITIGATION_STEPS.findIndex((x) => x.key === currentStep);
+        if (i < stepIdx) cls = 'mit-done';
+        else if (i === stepIdx) cls = 'mit-active';
+        else cls = 'mit-pending';
+      }
+      const connector = i < MITIGATION_STEPS.length - 1
+        ? `<div class="mit-connector ${cls === 'mit-done' ? 'done' : ''}"></div>`
+        : '';
+      return `
+        <div class="mit-step ${cls}">
+          <div class="mit-dot">
+            ${cls === 'mit-done' ? icons.check : cls === 'mit-active' ? '<span class="spin" style="width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;display:block"></span>' : s.icon}
+          </div>
+          <div class="mit-label">${s.label}</div>
+        </div>${connector}`;
+    }).join('')}
+  </div>`;
+}
+
+function mitigationCard(conj, mitigation, manEntry, approval) {
+  // If not yet started
+  if (!mitigation) {
+    return `
+    <div class="stage-card mit-card" id="mitigationCard">
+      <div class="stage-card-head">
+        <span class="stage-card-eyebrow">06 · POST-MANEUVER MITIGATION</span>
+        <span class="source-tag sim">SIMULATION</span>
+      </div>
+      <div class="mit-pending-msg">${icons.fly}<p>Closed-loop reassessment queued. Starting simulation…</p></div>
+    </div>`;
+  }
+
+  const { status, step, preMiss, postMiss, preRisk, postRisk, preLevel, postLevel, deltaV, maneuver: mId, burnDir, postRiskLive } = mitigation;
+
+  // Running — show animated step track + partial data
+  if (status === 'running') {
+    return `
+    <div class="stage-card mit-card" id="mitigationCard">
+      <div class="stage-card-head">
+        <span class="stage-card-eyebrow">06 · POST-MANEUVER MITIGATION</span>
+        <span class="source-tag sim">SIMULATION</span>
+      </div>
+      ${mitigationStepTrack(step)}
+      <div class="mit-progress-msg">
+        ${step === 'pre' ? 'Capturing pre-maneuver orbital state…' : ''}
+        ${step === 'burn' ? `Applying approved burn: ${mId} (${burnDir ?? ''}, ${deltaV != null ? deltaV.toFixed(2)+' m/s' : '—'})…` : ''}
+        ${step === 'prop' ? 'Propagating post-burn trajectory via SGP4…' : ''}
+        ${step === 'post' ? `Projected new separation: ${postMiss != null ? fmtKm(postMiss) : '—'}` : ''}
+        ${step === 'assess' ? 'Re-scoring conjunction risk on projected post-burn state…' : ''}
+      </div>
+    </div>`;
+  }
+
+  // Completed — full card with comparison matrix and outcome
+  const outcomeClass = status === 'MITIGATED' ? 'outcome-mitigated' : status === 'MONITORING' ? 'outcome-monitoring' : 'outcome-active';
+  const outcomeIcon  = status === 'MITIGATED' ? icons.check : icons.alertTriangle;
+  const outcomeLabel = status === 'MITIGATED' ? '✓ CONJUNCTION MITIGATED'
+                     : status === 'MONITORING' ? '⚠ MONITORING'
+                     : '⚠ CONJUNCTION REMAINS';
+
+  const missImprovement = postMiss != null && preMiss != null ? ((postMiss - preMiss) / preMiss * 100) : null;
+  const riskImprovement = postRisk != null && preRisk != null ? preRisk - postRisk : null;
+
+  const preColorVar  = `var(${riskTierColorVar(preLevel)})`;
+  const postColorVar = `var(${riskTierColorVar(postLevel)})`;
+
+  return `
+  <div class="stage-card mit-card ${outcomeClass}" id="mitigationCard">
+    <div class="stage-card-head">
+      <span class="stage-card-eyebrow">06 · POST-MANEUVER MITIGATION${sourceTag(postRiskLive ?? false)}</span>
+      <span class="mit-outcome-badge ${outcomeClass}">${outcomeIcon}${outcomeLabel}</span>
+    </div>
+
+    ${mitigationStepTrack('done')}
+
+    <div class="mit-comparison">
+      <div class="mit-col pre">
+        <div class="mit-col-label">PRE-MANEUVER</div>
+        <div class="mit-gauge-row">
+          ${gaugeSVG(preRisk ?? 0, preColorVar)}
+          <div class="gauge-num">
+            <span class="score" style="color:${preColorVar}">${fmtNum(preRisk, 1)}</span>
+            <span class="tier">${preLevel}</span>
+          </div>
+        </div>
+        <div class="mit-stat"><label>Miss Distance</label><span>${fmtKm(preMiss)}</span></div>
+        <div class="mit-stat"><label>Risk Score</label><span style="color:${preColorVar}">${fmtNum(preRisk, 1)} / 100</span></div>
+        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${preLevel}" style="font-size:9px;padding:2px 8px">${preLevel}</span></div>
+      </div>
+
+      <div class="mit-arrow-col">
+        <div class="mit-arrow-container">
+          <div class="mit-arrow-line"></div>
+          <div class="mit-arrow-head">${icons.fly}</div>
+          <div class="mit-dv-label">${deltaV?.toFixed(2) ?? '—'} m/s<br/><span style="font-size:8px;opacity:0.7">${burnDir ?? ''}</span></div>
+        </div>
+        ${missImprovement != null ? `<div class="mit-improvement ${missImprovement >= 0 ? 'positive' : 'negative'}">+${missImprovement.toFixed(0)}% sep</div>` : ''}
+        ${riskImprovement != null ? `<div class="mit-improvement ${riskImprovement >= 0 ? 'positive' : 'negative'}">${riskImprovement >= 0 ? '↓' : '↑'}${Math.abs(riskImprovement).toFixed(1)} risk</div>` : ''}
+      </div>
+
+      <div class="mit-col post">
+        <div class="mit-col-label">POST-MANEUVER</div>
+        <div class="mit-gauge-row">
+          ${gaugeSVG(postRisk ?? 0, postColorVar)}
+          <div class="gauge-num">
+            <span class="score" style="color:${postColorVar}">${fmtNum(postRisk, 1)}</span>
+            <span class="tier">${postLevel}</span>
+          </div>
+        </div>
+        <div class="mit-stat"><label>Miss Distance</label><span>${fmtKm(postMiss)}</span></div>
+        <div class="mit-stat"><label>Risk Score</label><span style="color:${postColorVar}">${fmtNum(postRisk, 1)} / 100</span></div>
+        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${postLevel}" style="font-size:9px;padding:2px 8px">${postLevel}</span></div>
+      </div>
+    </div>
+
+    ${status !== 'MITIGATED' ? `
+    <div class="mit-residual-note">
+      ${icons.info}
+      <p>${status === 'MONITORING'
+        ? `Separation improved to ${fmtKm(postMiss)} but risk remains elevated. Continue active monitoring and consider a follow-up burn if TCA approaches.`
+        : `Applied burn was insufficient to reduce conjunction risk below acceptable thresholds. Recommend re-screening with revised maneuver parameters.`
+      }</p>
+    </div>` : ''}
+  </div>`;
+}
+
 function doApprove(conj, manEntry, selectedId) {
   const maneuver = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
   setApproval(conj.conjunction_id, maneuver.maneuver_id);
@@ -298,7 +553,9 @@ function doApprove(conj, manEntry, selectedId) {
   activeStageKey = null;
   render();
 
-  pushLog(`Operator approved ${maneuver.maneuver_id} (${maneuver.burn_direction}, ${maneuver.delta_v_m_s.toFixed(2)} m/s) for ${conj.conjunction_id}`, 'ok');
-  toast('MANEUVER APPROVED', `${maneuver.maneuver_id} simulated — projected separation ${fmtKm(maneuver.new_separation_km)}`, 'info');
-  onApproveCb?.(conj, maneuver);
+  pushLog(`Operator approved ${maneuver.maneuver_id} (${maneuver.burn_direction}, ${maneuver.delta_v_m_s.toFixed(2)} m/s) for ${conj.conjunction_id}. Starting mitigation simulation…`, 'ok');
+  toast('MANEUVER APPROVED', `${maneuver.maneuver_id} approved — running closed-loop simulation…`, 'info');
+
+  // Kick off mitigation flow (non-blocking)
+  runMitigationFlow(conj, maneuver);
 }

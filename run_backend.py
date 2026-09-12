@@ -22,19 +22,34 @@ SERVICES = [
     {"name": "Decision Optimizer Agent", "module": "services.optimizer.app.main:app", "port": 8003},
 ]
 
-processes: List[subprocess.Popen] = []
+processes = {}
+
+
+def start_service(svc):
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        svc["module"],
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(svc["port"])
+    ]
+    print(f"[*] Starting {svc['name']:<25} on http://localhost:{svc['port']}")
+    return subprocess.Popen(cmd)
 
 
 def stop_all(sig=None, frame=None):
     print("\n[OrbitalGuard] Stopping all agent services...")
-    for p in processes:
+    for name, p in processes.items():
         if p.poll() is None:
             try:
                 p.terminate()
             except Exception:
                 pass
     time.sleep(1)
-    for p in processes:
+    for name, p in processes.items():
         if p.poll() is None:
             try:
                 p.kill()
@@ -53,19 +68,8 @@ def main():
     print("=" * 60)
 
     for svc in SERVICES:
-        cmd = [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            svc["module"],
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(svc["port"])
-        ]
-        print(f"[*] Starting {svc['name']:<25} on http://localhost:{svc['port']}")
-        proc = subprocess.Popen(cmd)
-        processes.append(proc)
+        proc = start_service(svc)
+        processes[svc["name"]] = proc
         time.sleep(0.5)
 
     print("=" * 60)
@@ -74,11 +78,13 @@ def main():
 
     try:
         while True:
-            # Monitor child processes; exit if any unexpected crash occurs
-            for p in processes:
-                if p.poll() is not None:
-                    print(f"[!] A service terminated unexpectedly (exit code {p.returncode}).")
-                    stop_all()
+            for svc in SERVICES:
+                name = svc["name"]
+                p = processes.get(name)
+                if p and p.poll() is not None:
+                    print(f"[!] {name} on port {svc['port']} exited (code {p.returncode}). Restarting in 2s...")
+                    time.sleep(2)
+                    processes[name] = start_service(svc)
             time.sleep(1)
     except KeyboardInterrupt:
         stop_all()

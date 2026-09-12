@@ -10,6 +10,7 @@ from services.propagation.app.ingestion.celestrak import CelesTrakIngestionClien
 from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine
 from services.propagation.app.propagation.trajectory import generate_trajectory
 from services.propagation.app.screening.conjunction import ScreeningPipeline
+from services.propagation.app.screening.fine_filter import FineFilter
 from services.propagation.app.synthetic.generator import generate_verified_synthetic_debris
 from shared.schemas.object import OrbitalObject, ObjectType, OrbitalData, DataQuality, PropagationInfo
 from shared.schemas.trajectory import Trajectory
@@ -22,7 +23,7 @@ router = APIRouter(prefix=settings.API_PREFIX, tags=["Orbital Intelligence Found
 @router.get("/health", summary="Service Health & Status")
 def get_health(db: Session = Depends(get_db)):
     repo = DatabaseRepository(db)
-    object_count = len(repo.get_all_objects())
+    object_count = repo.get_object_count()
     return {
         "status": "HEALTHY",
         "service": settings.APP_NAME,
@@ -255,6 +256,8 @@ def list_conjunctions(db: Session = Depends(get_db)):
 @router.post("/demo/inject-synthetic", summary="Inject Synthetic Debris & Guarantee Conjunction for Demo")
 def inject_synthetic_demo(
     target_catalog_id: str = Query(default="25544", description="Target satellite catalog ID (e.g. ISS 25544)"),
+    tca_offset_minutes: Optional[float] = Query(default=None, description="Optional custom TCA offset in minutes"),
+    profile_index: Optional[int] = Query(default=None, description="Optional encounter geometry profile index (0-4)"),
     db: Session = Depends(get_db)
 ):
     repo = DatabaseRepository(db)
@@ -275,7 +278,11 @@ def inject_synthetic_demo(
         "tle_line_2": target.raw_tle_line2
     }
 
-    synth_item = generate_verified_synthetic_debris(target_data, tca_offset_minutes=45.0, target_separation_km=8.2)
+    synth_item = generate_verified_synthetic_debris(
+        target_data,
+        tca_offset_minutes=tca_offset_minutes,
+        profile_index=profile_index
+    )
 
     # Save synthetic debris to DB
     synth_db = repo.save_object(
@@ -290,6 +297,7 @@ def inject_synthetic_demo(
         raw_data=synth_item.get("raw_data")
     )
 
+<<<<<<< HEAD
     # Screen ONLY the injected object against its intended target, not the
     # whole catalog. This used to call run_screening_pipeline() -- the same
     # handler behind POST /screen -- which pulls every tracked object
@@ -332,6 +340,16 @@ def inject_synthetic_demo(
 
     for c in conjunctions:
         repo.save_conjunction(c)
+=======
+    # Target conjunction screening specifically between target satellite and synthetic debris
+    fine_filter = FineFilter(threshold_km=50.0)
+    candidate = fine_filter.compute_conjunction_candidate(target_data, synth_item, horizon_minutes=90)
+
+    conjunctions = []
+    if candidate:
+        repo.save_conjunction(candidate)
+        conjunctions.append(candidate)
+>>>>>>> origin/model-1
 
     return {
         "message": f"Successfully injected synthetic object {synth_item['name']}.",

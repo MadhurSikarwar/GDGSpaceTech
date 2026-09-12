@@ -99,10 +99,29 @@ class DatabaseRepository:
 
         return db_obj
 
-    def get_all_objects(self, object_type: Optional[str] = None) -> List[ObjectDB]:
+    def get_object_count(self) -> int:
+        return self.db.query(ObjectDB).count()
+
+    def get_all_objects(
+        self,
+        object_type: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None
+    ) -> List[ObjectDB]:
+        from sqlalchemy import case
         query = self.db.query(ObjectDB)
         if object_type:
             query = query.filter(ObjectDB.object_type == object_type)
+        priority_order = case(
+            (ObjectDB.object_type == "SYNTHETIC_DEBRIS", 0),
+            (ObjectDB.catalog_id == "25544", 1),
+            else_=2
+        )
+        query = query.order_by(priority_order, ObjectDB.catalog_id)
+        if offset is not None and offset > 0:
+            query = query.offset(offset)
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
         return query.all()
 
     def get_object_by_catalog_id(self, catalog_id: str) -> Optional[ObjectDB]:

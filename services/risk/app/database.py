@@ -15,16 +15,10 @@ _session_factory = None
 _db_available = False
 
 try:
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
+    from services.propagation.app.database.repository import SessionLocal
     from services.propagation.app.database.models import ConjunctionCandidateDB, RiskAssessmentDB
 
-    db_url = os.getenv("DATABASE_URL", "sqlite:///./orbitalguard.db")
-    connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
-    
-    # Check if host is resolvable or SQLite
-    engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
-    _session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    _session_factory = SessionLocal
     _db_available = True
 except Exception as e:
     logger.warning(f"Database connection initialization skipped: {e}")

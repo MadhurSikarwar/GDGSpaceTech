@@ -6,10 +6,21 @@ from shared.schemas.risk import RiskAssessment
 from services.risk.app.database import get_conjunction_from_db, load_fixture_conjunctions
 from services.risk.app.scoring import assess_conjunction_risk
 
+from fastapi.middleware.cors import CORSMiddleware
+import httpx
+
 app = FastAPI(
     title="OrbitalGuard Maneuver Agent",
     version="1.0.0",
     description="Generates simulated avoidance maneuver options (posigrade, retrograde, normal)."
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global in-memory cache for maneuver candidates by conjunction_id
@@ -32,14 +43,14 @@ def save_maneuver_candidates_to_db(candidates: ManeuverCandidates) -> bool:
         session = SessionLocal()
         try:
             for c in candidates.candidates:
+                db_id = f"{candidates.conjunction_id}_{c.maneuver_id}"
                 existing = session.query(ManeuverCandidateDB).filter(
-                    ManeuverCandidateDB.conjunction_id == candidates.conjunction_id,
-                    ManeuverCandidateDB.maneuver_id == c.maneuver_id
+                    ManeuverCandidateDB.maneuver_id == db_id
                 ).first()
                 if not existing:
                     record = ManeuverCandidateDB(
+                        maneuver_id=db_id,
                         conjunction_id=candidates.conjunction_id,
-                        maneuver_id=c.maneuver_id,
                         burn_direction=c.burn_direction,
                         delta_v_m_s=c.delta_v_m_s,
                         new_separation_km=c.new_separation_km,
@@ -75,8 +86,20 @@ def generate_maneuvers(
                 detail="Either a RiskAssessment JSON body or a 'conjunction_id' query parameter must be provided."
             )
 
-        # 1. Fetch conjunction candidate from DB or fixtures
+        # 1. Fetch conjunction candidate from DB, Tracking API, or fixtures
         candidate = get_conjunction_from_db(conjunction_id)
+        if candidate is None:
+            try:
+                with httpx.Client(timeout=3.0) as client:
+                    resp = client.get("http://localhost:8000/api/v1/conjunctions")
+                    if resp.status_code == 200:
+                        for c in resp.json():
+                            if c.get("conjunction_id") == conjunction_id:
+                                candidate = ConjunctionCandidate.model_validate(c)
+                                break
+            except Exception:
+                pass
+
         if candidate is None:
             fixtures = load_fixture_conjunctions()
             for f in fixtures:

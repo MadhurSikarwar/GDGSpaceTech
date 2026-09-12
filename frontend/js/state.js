@@ -27,6 +27,7 @@ export const state = {
   maneuvers: new Map(),     // conjunctionId -> { data: ManeuverCandidates, live: bool }
   decisions: new Map(),     // conjunctionId -> { data: ManeuverDecision, live: bool }
   approvals: new Map(),     // conjunctionId -> { maneuverId, at }
+  mitigations: new Map(),   // conjunctionId -> { status, preMiss, postMiss, preRisk, postRisk, deltaV, maneuver, computedAt }
   selectedManeuver: new Map(), // conjunctionId -> maneuverId (user override before approval)
 
   serviceStatus: {
@@ -156,6 +157,11 @@ export function setDecision(conjId, entry) {
 export function setApproval(conjId, maneuverId) {
   state.approvals.set(conjId, { maneuverId, at: new Date() });
   notify('approvals');
+}
+
+export function setMitigation(conjId, result) {
+  state.mitigations.set(conjId, result);
+  notify('mitigations');
 }
 
 export function setSelectedManeuver(conjId, maneuverId) {
