@@ -412,10 +412,15 @@ main {
 
 .selection-card {
   top: 16px; right: 16px; width: 250px;
+  max-height: calc(100vh - 110px); overflow-y: auto;
   background: rgba(8,10,15,0.88); border: 1px solid var(--hair-accent); border-radius: var(--radius-md);
   padding: 12px 14px; backdrop-filter: blur(8px);
   animation: slide-in-right 0.22s var(--ease);
 }
+/* custom scrollbar for the dark selection card */
+.selection-card::-webkit-scrollbar { width: 4px; }
+.selection-card::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+.selection-card::-webkit-scrollbar-track { background: transparent; }
 .selection-card .sc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
 .selection-card .sc-name { font-family: var(--f-display); font-weight: 600; font-size: 12.5px; color: var(--ink-0); }
 .selection-card .sc-close { cursor: pointer; color: var(--ink-3); background: none; border: none; padding: 2px; }
