@@ -250,6 +250,7 @@ async function onActiveConjunctionChanged() {
     prevIds.forEach((id) => { if (id !== singleSelectedId) globe.unfocus(id); });
     conjunctionFocusIds = [];
     globe.clearConjunctionMarker();
+    globe.clearDistanceRuler();
     clearPostManeuverGhost();
     renderTlMarkers();
     return;
@@ -342,6 +343,7 @@ function applyConjunctionToExplore(obj, conj) {
   const posA = globe.kmToScene(obj.state.position_km);
   const posB = other?.state ? globe.kmToScene(other.state.position_km) : posA;
   globe.exploreConjunction(posA, posB, { duration: 2200 });
+  globe.setDistanceRuler(conj.primary_object, conj.secondary_object);
 
   beginTcaApproach(conj);
   renderExploreCard(obj, conj);
@@ -372,6 +374,7 @@ function handleExitExplore() {
   tcaWatch = null;
   exitExplore();
   globe.clearRelevance();
+  globe.clearDistanceRuler();
   globe.returnToGlobal(1500);
   clearSelection();
 }
@@ -601,15 +604,38 @@ async function handleInjectOnTarget(targetCatalogId) {
       const dist = newConj.closest_approach?.distance_km != null ? `${newConj.closest_approach.distance_km.toFixed(1)} km` : '';
       toast('CONJUNCTION DETECTED', `${targetName} × ${newConj.secondary_object_name || newConj.secondary_object} (${dist})`, 'crit');
 
-      if (state.explore.active) {
-        handleExitExplore();
+      // Cinematic reveal: freshly-injected debris is a "threat just appeared"
+      // moment, so fly straight into Explore Mode on it -- camera frames both
+      // objects, the rest of the catalog dims, and playback creeps toward
+      // TCA, exactly like clicking a real conjunction. This used to exit
+      // Explore Mode (if active) and jump straight to Pipeline with zero
+      // buildup, so the operator only ever saw the outcome, never the
+      // encounter itself.
+      const freshTarget = findByCatalogId(targetCatalogId);
+      if (freshTarget?.state) {
+        const prevSelected = singleSelectedId;
+        singleSelectedId = targetCatalogId;
+        selectObject(targetCatalogId);
+        if (prevSelected && prevSelected !== targetCatalogId && !conjunctionFocusIds.includes(prevSelected)) globe.unfocus(prevSelected);
+        renderSelectionCard(freshTarget); // populate name/badge/altitude/etc, not just the explore overlay
+        enterExplore(targetCatalogId, newConj.conjunction_id);
+        applyConjunctionToExplore(freshTarget, newConj);
+        setView('orbit');
+        fetchTrajectoryCached(targetCatalogId).then((traj) => {
+          if (singleSelectedId !== targetCatalogId) return;
+          const status = document.getElementById('scTrajStatus');
+          if (status) status.textContent = `Trajectory loaded — ${traj.trajectory.length} pts / ${traj.propagation_horizon_minutes} min`;
+        }).catch(() => {});
+        const debrisId = newConj.primary_object === targetCatalogId ? newConj.secondary_object : newConj.primary_object;
+        globe.pulseArrival(debrisId); // hot flash on the object that just arrived
+      } else {
+        // No state vector to frame (shouldn't normally happen) -- fall back
+        // to the old behaviour rather than show a broken/empty 3D view.
+        setTimeout(() => {
+          setView('pipeline');
+          openConjunction(newConj.conjunction_id, true);
+        }, 600);
       }
-
-      // Automatically switch to the PIPELINE tab and run/display the pipeline for this conjunction
-      setTimeout(() => {
-        setView('pipeline');
-        openConjunction(newConj.conjunction_id, true);
-      }, 600);
     } else {
       toast('SYNTHETIC DEBRIS INJECTED', 'Check the Conjunctions tab.', 'warn');
     }
@@ -648,10 +674,43 @@ async function handleApprove(conj, maneuver) {
       return { timestamp: p.timestamp, x: p.x + offset * 0.6, y: p.y + offset * 0.6, z: p.z + offset * 0.3, altitude_km: p.altitude_km };
     });
 
+    // Cinematic payoff: fly into the same Explore Mode framing used for
+    // investigating a conjunction *before* drawing the ghost trajectory, not
+    // after. applyConjunctionToExplore() -> setActiveConjunction() ->
+    // onActiveConjunctionChanged() synchronously calls clearPostManeuverGhost()
+    // (pre-existing behaviour, meant to drop a stale ghost when switching
+    // conjunctions) -- draw the ghost afterward, or that same call wipes out
+    // the ghost we just drew, on the very approval that created it.
+    //
+    // Always re-flies the camera, even if already "exploring" this exact
+    // conjunction -- the camera may have drifted (manual drag/zoom, or time
+    // spent on the Pipeline tab) since that framing was set, and the whole
+    // point of this moment is a reliably good shot, not a best-effort one.
+    setView('orbit');
+    const primaryObj = findByCatalogId(conj.primary_object);
+    if (primaryObj?.state) {
+      enterExplore(conj.primary_object, conj.conjunction_id);
+      applyConjunctionToExplore(primaryObj, conj); // also sets ruler to primary/secondary + starts T-10min playback; both overridden below
+    }
+
     clearPostManeuverGhost();
     postManeuverGhostKey = `${conj.primary_object}::post-maneuver`;
     globe.focusTrajectory(postManeuverGhostKey, shifted, POST_MANEUVER_COLOR);
     globe.setSimMinutes(state.simMinutes);
+
+    if (primaryObj?.state) {
+      // Rewind to a little before the burn and play forward so the operator
+      // actually watches the green post-burn path diverge from the red
+      // debris track live, instead of a static extra line just appearing.
+      globe.flashBurn(conj.primary_object); // thruster impulse at the burn instant
+      globe.setDistanceRuler(postManeuverGhostKey, conj.secondary_object); // live post-burn clearance
+
+      const tcaMinutes = (new Date(conj.tca) - Date.now()) / 60000;
+      setSimMinutes(clamp(splitIdx - 3, 0, splitIdx));
+      state.playing = true;
+      updatePlayIcon();
+      tcaWatch = (tcaMinutes > 0 && tcaMinutes <= 90) ? { conj, tcaMinutes } : null;
+    }
   } catch (err) {
     console.warn('post-maneuver visualization skipped', err);
   }

@@ -156,39 +156,107 @@ function buildLatLongGrid(radius) {
 
 const SUN_DIRECTION = new THREE.Vector3(1, 0.4, 0.6).normalize();
 
-function dayNightMaterial(dayTex, nightTex) {
+// Earth material: day/night blend (as before) plus two additions that were
+// previously loaded... nowhere. The day texture alone is a flat photo decal
+// with no lighting response of its own, which is exactly why it reads as
+// soft/blurred no matter its resolution -- there's nothing on the surface
+// that visually reacts to the sun direction. Two standard maps fix that
+// without touching geometry or the render pipeline:
+//   - normalTex adds tangent-space relief shading (terrain actually catches
+//     light), via Christian Schuler's derivative-based tangent frame so no
+//     precomputed tangent attributes are needed on the sphere geometry.
+//   - specTex (bright over ocean, dark over land) masks a Blinn-Phong
+//     highlight to water only, giving oceans real shine instead of flat
+//     matte color.
+// The night side also no longer drops to near-black city-lights-on-void: a
+// faint wash of the (darkened) day texture keeps coastlines legible there,
+// since a fully physically-dark hemisphere reads as "broken" in a UI far
+// more than it reads as "realistic".
+function dayNightMaterial(dayTex, nightTex, specTex, normalTex) {
   dayTex.colorSpace = THREE.SRGBColorSpace;
   return new THREE.ShaderMaterial({
     uniforms: {
       dayTexture: { value: dayTex },
       nightTexture: { value: nightTex },
+      specularTexture: { value: specTex },
+      normalTexture: { value: normalTex },
       sunDirection: { value: SUN_DIRECTION },
     },
     vertexShader: `
       varying vec2 vUv;
-      varying vec3 vNormalW;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPosition;
       void main() {
         vUv = uv;
-        vNormalW = normalize( mat3(modelMatrix) * normal );
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vViewNormal = normalize(normalMatrix * normal);
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vViewPosition = -mvPosition.xyz;
+        gl_Position = projectionMatrix * mvPosition;
       }`,
     fragmentShader: `
       uniform sampler2D dayTexture;
       uniform sampler2D nightTexture;
+      uniform sampler2D specularTexture;
+      uniform sampler2D normalTexture;
       uniform vec3 sunDirection;
       varying vec2 vUv;
-      varying vec3 vNormalW;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPosition;
+
+      // Tangent-space normal mapping without precomputed tangents (Schuler).
+      // Works on any UV'd surface -- no geometry.computeTangents() needed.
+      mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
+        vec3 dp1 = dFdx(p);
+        vec3 dp2 = dFdy(p);
+        vec2 duv1 = dFdx(uv);
+        vec2 duv2 = dFdy(uv);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+        return mat3(T * invmax, B * invmax, N);
+      }
+
       void main() {
-        float intensity = dot(vNormalW, normalize(sunDirection));
-        float mixFactor = smoothstep(-0.2, 0.15, intensity);
+        vec3 N = normalize(vViewNormal);
+        vec3 V = normalize(vViewPosition);
+        vec3 sunView = normalize((viewMatrix * vec4(sunDirection, 0.0)).xyz);
+
+        // Day/night terminator on the clean geometric normal -- keeps the
+        // twilight line itself smooth; the bump map only adds local detail
+        // within each side, not to where the line falls.
+        float terminator = dot(N, sunView);
+        float dayMix = smoothstep(-0.35, 0.25, terminator);
+
+        vec3 mapN = texture2D(normalTexture, vUv).rgb * 2.0 - 1.0;
+        mapN.xy *= 0.6; // restrained -- relief hint, not a cartoon bump
+        mat3 TBN = cotangentFrame(N, -V, vUv);
+        vec3 shadingNormal = normalize(TBN * mapN);
+
         vec3 dayColor = texture2D(dayTexture, vUv).rgb;
-        vec3 nightColor = texture2D(nightTexture, vUv).rgb * vec3(1.6, 1.4, 1.0) * 0.9;
-        gl_FragColor = vec4(mix(nightColor, dayColor, mixFactor), 1.0);
+        float relief = clamp(dot(shadingNormal, sunView), 0.0, 1.0);
+        dayColor *= mix(0.9, 1.06, relief);
+
+        vec3 nightColor = texture2D(nightTexture, vUv).rgb * vec3(1.6, 1.4, 1.0) * 0.95;
+        vec3 nightBase = nightColor + dayColor * 0.075;
+
+        // Renderer has no tone mapping, so anything this pushes past 1.0
+        // hard-clips to solid white -- keep the highlight tight (high power)
+        // and low-intensity, a glint, not a wash of shine across the ocean.
+        float specMask = texture2D(specularTexture, vUv).r;
+        vec3 H = normalize(sunView + V);
+        float specPower = pow(max(dot(shadingNormal, H), 0.0), 130.0);
+        vec3 specular = vec3(0.8, 0.88, 1.0) * specPower * specMask * dayMix * 0.4;
+
+        vec3 color = mix(nightBase, dayColor, dayMix) + specular;
+        gl_FragColor = vec4(color, 1.0);
       }`,
+    extensions: { derivatives: true },
   });
 }
 
-function buildEarth() {
+function buildEarth(renderer) {
   const group = new THREE.Group();
   const geo = new THREE.SphereGeometry(SCENE_EARTH_RADIUS, 128, 128);
 
@@ -197,17 +265,36 @@ function buildEarth() {
   const earthMesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ map: buildEarthTexture(), shininess: 6, specular: 0x1a2636 }));
   group.add(earthMesh);
 
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
   const loader = new THREE.TextureLoader();
   const textures = {};
   const upgrade = () => {
-    if (textures.day && textures.night) earthMesh.material = dayNightMaterial(textures.day, textures.night);
+    // Waits for all four maps so the swap is one clean cut to the fully-lit
+    // material, never a visible half-upgraded frame (e.g. relief with no
+    // specular yet).
+    if (textures.day && textures.night && textures.spec && textures.normal) {
+      earthMesh.material = dayNightMaterial(textures.day, textures.night, textures.spec, textures.normal);
+    }
   };
-  loader.load(TEXTURE_BASE + 'earth_atmos_2048.jpg', (tex) => { textures.day = tex; upgrade(); }, undefined, () => {});
-  loader.load(TEXTURE_BASE + 'earth_lights_2048.png', (tex) => { textures.night = tex; upgrade(); }, undefined, () => {});
-  loader.load(TEXTURE_BASE + 'earth_clouds_1024.png', (tex) => {
+  const loadTex = (file, key, sRGB) => {
+    loader.load(TEXTURE_BASE + file, (tex) => {
+      tex.anisotropy = maxAniso; // sharper at the oblique/zoomed angles the globe is usually viewed at
+      if (sRGB) tex.colorSpace = THREE.SRGBColorSpace;
+      textures[key] = tex;
+      upgrade();
+    }, undefined, () => {});
+  };
+  // 4K day map (was 2K) -- the single biggest legibility win at typical zoom.
+  loadTex('earth_atmos_4096.jpg', 'day', true);
+  loadTex('earth_lights_2048.png', 'night', false);
+  loadTex('earth_specular_2048.jpg', 'spec', false);
+  loadTex('earth_normal_2048.jpg', 'normal', false);
+
+  loader.load(TEXTURE_BASE + 'earth_clouds_2048.png', (tex) => {
+    tex.anisotropy = maxAniso;
     const cloudsMesh = new THREE.Mesh(
       new THREE.SphereGeometry(SCENE_EARTH_RADIUS * 1.015, 96, 96),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.75, depthWrite: false })
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.7, depthWrite: false })
     );
     cloudsMesh.name = 'clouds';
     cloudsMesh.visible = pendingCloudsVisible; // respect a toggle clicked before this async load resolved
@@ -256,7 +343,7 @@ export function initGlobe(canvas) {
 
   scene.add(buildStarfield());
 
-  const earthGroup = buildEarth();
+  const earthGroup = buildEarth(renderer);
   scene.add(earthGroup);
 
   scene.add(new THREE.AmbientLight(0x1c2836, 1.5));
@@ -619,6 +706,9 @@ export function initGlobe(canvas) {
     disposeTrajectoryVisuals(entry);
     setInstanceHidden(objectId, false);
     focused.delete(objectId);
+    // A ruler pointing at a now-gone marker would read a stale/frozen
+    // distance forever -- drop it rather than leave a dangling reference.
+    if (ruler && (ruler.idA === objectId || ruler.idB === objectId)) clearDistanceRuler();
   }
 
   // ---- direction of travel ----
@@ -682,7 +772,17 @@ export function initGlobe(canvas) {
     focusGroup.add(entry.line);
     entry.arrows = buildDirectionArrows(pts, base);
     if (entry.arrows) focusGroup.add(entry.arrows);
+
+    // A pulseArrival() call that arrived before this object's trajectory had
+    // loaded is queued here rather than dropped -- this is exactly the path
+    // that resolves it (see pulseArrival below).
+    if (pendingArrivalPulse && pendingArrivalPulse.objectId === objectId) {
+      entry.arrivalPulse = { start: performance.now(), duration: pendingArrivalPulse.duration };
+      pendingArrivalPulse = null;
+    }
+
     positionEntry(entry);
+    updateRuler(); // this may be the entry the ruler was waiting on
   }
 
   let simMinutes = 0;
@@ -705,6 +805,126 @@ export function initGlobe(canvas) {
 
   function applySimMinutes() {
     for (const [, entry] of focused) positionEntry(entry);
+    updateRuler();
+  }
+
+  // ---- live distance ruler ----
+  // A dashed connector + billboard km label between two focused objects,
+  // kept in sync every time playback moves. Used whenever a conjunction --
+  // real, freshly injected, or a post-maneuver ghost vs. the debris it was
+  // meant to avoid -- is the thing on screen, so the operator watches an
+  // actual live number instead of eyeballing how close two dots look.
+  let ruler = null; // { idA, idB, line, label, lastText }
+  let pendingArrivalPulse = null; // { objectId, duration } waiting on setFocusTrajectory
+
+  function makeRulerLabelSprite() {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 64;
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(0.42, 0.105, 1);
+    sprite.userData.canvas = c;
+    sprite.userData.ctx = c.getContext('2d');
+    return sprite;
+  }
+
+  function drawRulerLabel(sprite, text, colorHex) {
+    const ctx = sprite.userData.ctx, c = sprite.userData.canvas;
+    ctx.clearRect(0, 0, c.width, c.height);
+    const pad = 8, r = 10;
+    ctx.fillStyle = 'rgba(6,10,16,0.72)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(pad, pad, c.width - pad * 2, c.height - pad * 2, r);
+    else ctx.rect(pad, pad, c.width - pad * 2, c.height - pad * 2);
+    ctx.fill();
+    ctx.strokeStyle = colorHexString(colorHex);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.font = '600 30px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#eaf3ff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, c.width / 2, c.height / 2 + 1);
+    sprite.material.map.needsUpdate = true;
+  }
+
+  function setDistanceRuler(idA, idB) {
+    clearDistanceRuler();
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    const mat = new THREE.LineDashedMaterial({ color: 0xeaf3ff, transparent: true, opacity: 0.55, dashSize: 0.045, gapSize: 0.03, toneMapped: false });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    line.raycast = () => {}; // a thin ruler line should never steal a click
+    focusGroup.add(line);
+    const label = makeRulerLabelSprite();
+    focusGroup.add(label);
+    ruler = { idA, idB, line, label, lastText: null };
+    updateRuler();
+  }
+
+  function clearDistanceRuler() {
+    if (!ruler) return;
+    focusGroup.remove(ruler.line);
+    ruler.line.geometry.dispose();
+    ruler.line.material.dispose();
+    focusGroup.remove(ruler.label);
+    ruler.label.material.map.dispose();
+    ruler.label.material.dispose();
+    ruler = null;
+  }
+
+  function updateRuler() {
+    if (!ruler) return;
+    const a = focused.get(ruler.idA), b = focused.get(ruler.idB);
+    if (!a || !b) return; // one side's trajectory hasn't loaded yet -- next call catches it
+    const posArr = ruler.line.geometry.attributes.position.array;
+    posArr[0] = a.marker.position.x; posArr[1] = a.marker.position.y; posArr[2] = a.marker.position.z;
+    posArr[3] = b.marker.position.x; posArr[4] = b.marker.position.y; posArr[5] = b.marker.position.z;
+    ruler.line.geometry.attributes.position.needsUpdate = true;
+    ruler.line.computeLineDistances();
+
+    const distKm = a.marker.position.distanceTo(b.marker.position) / KM_TO_SCENE;
+    const text = `${distKm >= 100 ? distKm.toFixed(0) : distKm.toFixed(1)} km`;
+    ruler.label.position.copy(a.marker.position).add(b.marker.position).multiplyScalar(0.5);
+    if (text !== ruler.lastText) {
+      ruler.lastText = text;
+      drawRulerLabel(ruler.label, text, distKm <= 10 ? 0xf0616e : 0x56e3d1);
+    }
+  }
+
+  // ---- cinematic arrival pulse ----
+  // A brief, hot intensification of a freshly-focused object's ring and
+  // trajectory line -- the "threat just appeared" beat right after synthetic
+  // debris injection. Purely a transient tweak of an already-existing
+  // entry's own objects (see the ring/line animation in tick() below), so
+  // there is nothing extra to leak or dispose once it fades.
+  function pulseArrival(objectId, duration = 1600) {
+    const entry = focused.get(objectId);
+    if (entry) entry.arrivalPulse = { start: performance.now(), duration };
+    else pendingArrivalPulse = { objectId, duration }; // trajectory not loaded yet; setFocusTrajectory resolves this
+  }
+
+  // ---- thruster burn flare ----
+  // A brief expanding, fading flare at an object's current position, marking
+  // the instant an approved avoidance maneuver's burn fires. Self-contained
+  // and self-disposing (tracked in burnFlares, cleaned up from tick() once
+  // its fade completes) rather than living on the focused entry, since it
+  // must keep animating even if that entry is later unfocused.
+  const burnFlares = [];
+  function flashBurn(objectId) {
+    const entry = focused.get(objectId);
+    if (!entry) return;
+    const flare = new THREE.Mesh(
+      new THREE.SphereGeometry(0.03, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfff3d6, transparent: true, toneMapped: false })
+    );
+    flare.position.copy(entry.marker.position);
+    flare.raycast = () => {};
+    flare.userData.burnStart = performance.now();
+    focusGroup.add(flare);
+    burnFlares.push(flare);
   }
 
   // ---- conjunction TCA marker ----
@@ -810,14 +1030,40 @@ export function initGlobe(canvas) {
 
     const t = now / 1000;
     for (const [, entry] of focused) {
-      const pulse = 1 + 0.35 * (0.5 + 0.5 * Math.sin(t * 2.6));
-      entry.ring.scale.set(0.16 * pulse, 0.16 * pulse, 1);
-      entry.ring.material.opacity = 0.9 - 0.5 * (0.5 + 0.5 * Math.sin(t * 2.6));
+      const basePulse = 1 + 0.35 * (0.5 + 0.5 * Math.sin(t * 2.6));
+      let ringScale = 0.16 * basePulse;
+      let ringOpacity = 0.9 - 0.5 * (0.5 + 0.5 * Math.sin(t * 2.6));
+
+      if (entry.arrivalPulse) {
+        const ap = clamp((now - entry.arrivalPulse.start) / entry.arrivalPulse.duration, 0, 1);
+        if (ap >= 1) {
+          entry.arrivalPulse = null;
+          if (entry.line) entry.line.material.opacity = 0.85; // restore baseline
+        } else {
+          const hot = Math.sin(ap * Math.PI); // 0 -> 1 -> 0 envelope
+          ringScale *= 1 + hot * 1.8;
+          ringOpacity = Math.min(1, ringOpacity + hot * 0.6);
+          if (entry.line) entry.line.material.opacity = 0.85 + hot * 0.15;
+        }
+      }
+      entry.ring.scale.set(ringScale, ringScale, 1);
+      entry.ring.material.opacity = ringOpacity;
     }
     if (tcaMarker) {
       const pulse = 1 + 0.6 * (0.5 + 0.5 * Math.sin(t * 3.4));
       tcaMarker.scale.setScalar(pulse);
       tcaMarker.material.opacity = 1 - 0.6 * (0.5 + 0.5 * Math.sin(t * 3.4));
+    }
+    for (let i = burnFlares.length - 1; i >= 0; i--) {
+      const f = burnFlares[i];
+      const p = clamp((now - f.userData.burnStart) / 900, 0, 1);
+      if (p >= 1) {
+        focusGroup.remove(f); f.geometry.dispose(); f.material.dispose();
+        burnFlares.splice(i, 1);
+        continue;
+      }
+      f.scale.setScalar(1 + p * 5);
+      f.material.opacity = (1 - p) * 0.9;
     }
 
     renderer.render(scene, camera);
@@ -868,5 +1114,11 @@ export function initGlobe(canvas) {
     },
     setRelevance(relevantIds) { setRelevance(relevantIds); },
     clearRelevance() { clearRelevance(); },
+
+    // ---- conjunction cinematics: live ruler, arrival pulse, burn flare ----
+    setDistanceRuler(idA, idB) { setDistanceRuler(idA, idB); },
+    clearDistanceRuler() { clearDistanceRuler(); },
+    pulseArrival(objectId, duration) { pulseArrival(objectId, duration); },
+    flashBurn(objectId) { flashBurn(objectId); },
   };
 }

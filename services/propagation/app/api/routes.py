@@ -107,8 +107,14 @@ def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
 # seconds and multiple MB, and it's the single most-hit expensive endpoint in
 # the service: it fires on every full page load, every "sync catalog" click,
 # and immediately after ingest/inject (the frontend reloads the catalog right
-# after injecting synthetic debris). A repeat call with no writes in between
-# gets served from cache instead of recomputed.
+# after injecting synthetic debris). Two complementary bounds on that cost:
+#   - limit/offset below caps how many objects are ever fetched+propagated in
+#     one call (frontend defaults to 5000 of however many are tracked), with
+#     priority ordering in the DB layer (repository.get_all_objects)
+#     guaranteeing synthetic debris and the ISS demo target are always on the
+#     first page even when paginated.
+#   - This cache serves a repeat call for the *same* (object_type, limit,
+#     offset) instantly instead of recomputing it.
 #
 # Keyed on DatabaseRepository's write counter rather than a plain TTL alone,
 # so a fresh ingest/inject is *never* masked by a stale cache entry -- the
@@ -117,22 +123,25 @@ def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
 # over a few seconds for LEO objects, which is already within the noise of
 # "current state" for a dashboard, not a precision propagation).
 #
-# Single dict, keyed by the object_type filter. This process runs as one
-# worker (see .claude/launch.json), so a plain module-level dict is enough;
-# a benign race between two concurrent requests recomputing at once just
-# means one extra recompute, never corrupted data (each entry is replaced
-# atomically, never mutated in place).
+# Keyed by (object_type, limit, offset) so different pages/filters don't
+# collide. This process runs as one worker (see .claude/launch.json), so a
+# plain module-level dict is enough; a benign race between two concurrent
+# requests recomputing at once just means one extra recompute, never
+# corrupted data (each entry is replaced atomically, never mutated in place).
 _OBJECTS_CACHE_TTL_SECONDS = 4.0
-_objects_cache: Dict[Optional[str], Dict[str, Any]] = {}
+_objects_cache: Dict[tuple, Dict[str, Any]] = {}
 
 
 @router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
 def get_objects(
     object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
+    limit: int = Query(default=5000, ge=1, le=5000, description="Maximum objects to propagate & return (1-5000)"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
 ):
+    cache_key = (object_type, limit, offset)
     version = get_objects_version()
-    cached = _objects_cache.get(object_type)
+    cached = _objects_cache.get(cache_key)
     if (
         cached is not None
         and cached["version"] == version
@@ -141,10 +150,10 @@ def get_objects(
         return cached["results"]
 
     repo = DatabaseRepository(db)
-    db_objs = repo.get_all_objects(object_type=object_type)
+    db_objs = repo.get_all_objects(object_type=object_type, limit=limit, offset=offset)
     results = _propagate_objects(db_objs)
 
-    _objects_cache[object_type] = {"version": version, "computed_at": time.monotonic(), "results": results}
+    _objects_cache[cache_key] = {"version": version, "computed_at": time.monotonic(), "results": results}
     return results
 
 
