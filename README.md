@@ -74,14 +74,36 @@ GDG-SPACE-TECH/
 
 ---
 
-## 3. Quick Start Guide
+## 3. Technology Stack
 
-### 3.1 Install Dependencies
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| **Orbital Data** | CelesTrak | TLE/OMM orbital data |
+| **Backup Data** | Space-Track | Secondary orbital data source |
+| **Orbital Propagation** | **Skyfield + SGP4** | Calculate satellite/debris positions & velocities |
+| **Backend — Tracking** | **Python** | Tracking + screening logic |
+| **Backend API** | **FastAPI** | Expose tracking/conjunction data |
+| **Database** | **PostgreSQL / SQLite** | Store objects, TLEs, conjunctions |
+| **DB ORM** | SQLAlchemy | Python ↔ Database |
+| **HTTP Client** | Requests / HTTPX | Fetch CelesTrak data |
+| **Risk Agent** | Python | Risk scoring |
+| **Maneuver Agent** | Python | Generate/simulate avoidance options |
+| **Optimizer Agent** | Python | Optimal maneuver decision recommendation |
+| **AI/LLM Layer** | Gemini | Agent reasoning / natural-language alerts |
+| **Frontend** | React / Next.js | Interactive dashboard |
+| **Testing** | Pytest | Automated testing |
+| **Containerization** | Docker | Consistent deployment environment |
+
+---
+
+## 4. Quick Start Guide
+
+### 4.1 Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3.2 Run Tracking & Screening Service
+### 4.2 Run Tracking & Screening Service
 ```bash
 python -m uvicorn services.propagation.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -89,14 +111,14 @@ Interactive OpenAPI documentation will be available at:
 - **Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **API Health**: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
 
-### 3.3 Run Complete Test Suite
+### 4.3 Run Complete Test Suite
 ```bash
 python -m pytest services/propagation/tests/ tests/ -v
 ```
 
 ---
 
-## 4. Key API Endpoints (`/api/v1/`)
+## 5. Key API Endpoints (`/api/v1/`)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -111,6 +133,6 @@ python -m pytest services/propagation/tests/ tests/ -v
 
 ---
 
-## 5. Multi-Agent Development Guide
+## 6. Multi-Agent Development Guide
 
 Read [INTEGRATION_CONTRACT.md](file:///c:/Users/mayur/Desktop/Projects/GDG-SPACE-TECH/INTEGRATION_CONTRACT.md) for full schema definitions, field names, units, timestamps, coordinate systems, and step-by-step instructions for teammates building Risk, Maneuver, Optimizer, and Frontend components.
