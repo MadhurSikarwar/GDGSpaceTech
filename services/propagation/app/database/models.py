@@ -53,7 +53,7 @@ class HistoricalTLEDB(Base):
     __tablename__ = "historical_tle"
 
     id = Column(String(64), primary_key=True, default=generate_uuid)
-    object_id = Column(String(32), nullable=False)
+    object_id = Column(String(64), nullable=False)
     catalog_id = Column(String(32), nullable=False)
     epoch = Column(DateTime(timezone=True), nullable=False)
     raw_tle = Column(Text, nullable=False)

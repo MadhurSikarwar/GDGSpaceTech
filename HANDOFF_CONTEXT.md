@@ -355,7 +355,6 @@ Below are copy-pasteable context blocks tailored for each teammate to initialize
 
 ---
 
-
 ### BLOCK 1 — RISK AGENT
 
 You are assisting with the Risk Agent module for OrbitalGuard — Autonomous Orbital Traffic Intelligence.
@@ -510,20 +509,7 @@ IMPLEMENTATION PRINCIPLES:
 
 - Do not modify the shared contracts just to simplify implementation.
 
-BEGIN:
-
-First inspect the repository, read INTEGRATION_CONTRACT.md, inspect shared/schemas/conjunction.py and shared/schemas/risk.py, inspect services/risk/, and inspect the Supabase/database configuration.
-
-Then explain:
-
-1. What data the Risk Agent receives.
-2. What RiskAssessment it must produce.
-3. How the risk score will be calculated.
-4. How risk levels will be assigned.
-5. How Supabase fits into the Risk Agent.
-6. What files you intend to create or modify.
-
-Do not start making broad architectural changes before explaining the proposed implementation.
+---
 ### ### BLOCK 2 — MANEUVER AGENT
 
 ```markdown
