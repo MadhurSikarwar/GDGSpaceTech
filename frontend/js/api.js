@@ -43,7 +43,7 @@ export async function checkHealth(base, timeoutMs = 2500) {
 
 // ---- Tracking + Screening (platform baseline, expected live) ----
 
-export async function getObjects(objectType = null, limit = 500, offset = 0) {
+export async function getObjects(objectType = null, limit = 5000, offset = 0) {
   const params = new URLSearchParams();
   if (objectType) params.append('object_type', objectType);
   if (limit) params.append('limit', limit);

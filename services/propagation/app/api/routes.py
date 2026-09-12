@@ -68,7 +68,7 @@ def ingest_data(
 @router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
 def get_objects(
     object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
-    limit: int = Query(default=500, ge=1, le=5000, description="Maximum objects to propagate & return (1-5000)"),
+    limit: int = Query(default=5000, ge=1, le=5000, description="Maximum objects to propagate & return (1-5000)"),
     offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
 ):
