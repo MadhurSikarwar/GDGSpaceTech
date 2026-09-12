@@ -1184,3 +1184,82 @@ main {
 #app:not(.landing-mode) ~ .hud-dock {
   transition: opacity 1.5s ease 0.5s;
 }
+
+/* ==========================================================================
+   Responsive (Mobile & Tablet)
+   ========================================================================== */
+@media (max-width: 768px) {
+  /* Topbar */
+  .topbar { padding: 0 10px; gap: 10px; overflow-x: auto; flex-wrap: nowrap; }
+  .brand-tag, .spaceweather-badge, .mission-clock { display: none; }
+  .brand { padding-right: 10px; border-right: none; }
+  .nav-tab { font-size: 10px; padding: 6px 8px; }
+  .btn-demo span:not(#demoBtnIcon) { display: none; }
+  .btn-demo { padding: 6px 10px; }
+  
+  /* Catalog */
+  .catalog-float {
+    width: auto;
+    right: 16px;
+    bottom: 80px;
+    top: auto;
+    max-height: 50vh;
+  }
+  .catalog-float.collapsed {
+    transform: translateX(-105%);
+  }
+  .catalog-collapse-btn {
+    right: -28px;
+    width: 24px;
+    height: 40px;
+  }
+  
+  /* Selection Card */
+  .selection-card {
+    top: auto !important;
+    bottom: 70px !important;
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-height: 45vh;
+    overflow-y: auto;
+  }
+  
+  /* Timeline & HUD */
+  .timeline-bar { bottom: 10px; left: 10px; right: 10px; }
+  .camera-controls { top: 70px; right: 10px; }
+  .timeline-bottom { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .tl-caption { display: none; }
+  
+  /* Views */
+  .view-conjunctions .view-inner,
+  .view-pipeline {
+    padding: 16px 10px 80px;
+  }
+  
+  /* Conjunction Cards */
+  .conj-card {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .conj-metric { text-align: left; }
+  .conj-pair { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+  
+  /* Pipeline */
+  .stage-track { overflow-x: auto; padding-bottom: 10px; }
+  .stage-node { width: 80px; }
+  
+  /* Drawers */
+  .glossary-drawer, .log-drawer {
+    width: 100%;
+    right: 0;
+  }
+  
+  /* Landing Page */
+  .landing-title {
+    font-size: 28px;
+    padding: 0 16px;
+    margin-bottom: 24px;
+  }
+}
+
