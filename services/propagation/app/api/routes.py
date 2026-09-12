@@ -1,10 +1,11 @@
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from services.propagation.app.config import settings
-from services.propagation.app.database.repository import get_db, DatabaseRepository
+from services.propagation.app.database.repository import get_db, DatabaseRepository, get_objects_version
 from services.propagation.app.ingestion.celestrak import CelesTrakIngestionClient
 from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine
 from services.propagation.app.propagation.trajectory import generate_trajectory
@@ -64,22 +65,22 @@ def ingest_data(
     }
 
 
-@router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
-def get_objects(
-    object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
-    db: Session = Depends(get_db)
-):
-    repo = DatabaseRepository(db)
-    db_objs = repo.get_all_objects(object_type=object_type)
-    now_dt = datetime.now(timezone.utc)
+def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
+    """Run SGP4 + build the response model for a batch of ObjectDB rows.
 
+    This is the expensive part of GET /objects: one full propagation and
+    Pydantic construction per object. Pulled out so it can be reused by both
+    the (now cached) list endpoint and anything else that needs the same
+    conversion for a small ad-hoc batch, without re-deriving it.
+    """
+    now_dt = datetime.now(timezone.utc)
     results: List[OrbitalObject] = []
     for o in db_objs:
         engine = SGP4PropagationEngine(o.raw_tle_line1, o.raw_tle_line2, o.name)
         state = engine.propagate_state(now_dt)
         data_quality = engine.calculate_data_age(o.epoch, now_dt)
 
-        obj = OrbitalObject(
+        results.append(OrbitalObject(
             object_id=o.object_id,
             catalog_id=o.catalog_id,
             name=o.name,
@@ -95,9 +96,54 @@ def get_objects(
             state=state,
             propagation=PropagationInfo(model="SGP4", reference_frame="TEME"),
             data_quality=data_quality
-        )
-        results.append(obj)
+        ))
+    return results
 
+
+# ---- short-lived cache for the bulk objects list --------------------------
+# GET /objects re-propagates every tracked object (SGP4 + Pydantic construction)
+# from scratch on every single call. At ~10.9k live objects that's several
+# seconds and multiple MB, and it's the single most-hit expensive endpoint in
+# the service: it fires on every full page load, every "sync catalog" click,
+# and immediately after ingest/inject (the frontend reloads the catalog right
+# after injecting synthetic debris). A repeat call with no writes in between
+# gets served from cache instead of recomputed.
+#
+# Keyed on DatabaseRepository's write counter rather than a plain TTL alone,
+# so a fresh ingest/inject is *never* masked by a stale cache entry -- the
+# very next read always sees it. The TTL on top just bounds how long a state
+# snapshot can be served without a write happening (position drifts a few km
+# over a few seconds for LEO objects, which is already within the noise of
+# "current state" for a dashboard, not a precision propagation).
+#
+# Single dict, keyed by the object_type filter. This process runs as one
+# worker (see .claude/launch.json), so a plain module-level dict is enough;
+# a benign race between two concurrent requests recomputing at once just
+# means one extra recompute, never corrupted data (each entry is replaced
+# atomically, never mutated in place).
+_OBJECTS_CACHE_TTL_SECONDS = 4.0
+_objects_cache: Dict[Optional[str], Dict[str, Any]] = {}
+
+
+@router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
+def get_objects(
+    object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
+    db: Session = Depends(get_db)
+):
+    version = get_objects_version()
+    cached = _objects_cache.get(object_type)
+    if (
+        cached is not None
+        and cached["version"] == version
+        and (time.monotonic() - cached["computed_at"]) < _OBJECTS_CACHE_TTL_SECONDS
+    ):
+        return cached["results"]
+
+    repo = DatabaseRepository(db)
+    db_objs = repo.get_all_objects(object_type=object_type)
+    results = _propagate_objects(db_objs)
+
+    _objects_cache[object_type] = {"version": version, "computed_at": time.monotonic(), "results": results}
     return results
 
 
@@ -244,8 +290,48 @@ def inject_synthetic_demo(
         raw_data=synth_item.get("raw_data")
     )
 
-    # Trigger screening to register the guaranteed conjunction
-    conjunctions = run_screening_pipeline(horizon=90, threshold_km=50.0, db=db)
+    # Screen ONLY the injected object against its intended target, not the
+    # whole catalog. This used to call run_screening_pipeline() -- the same
+    # handler behind POST /screen -- which pulls every tracked object
+    # (~10.9k live) and runs the full O(primaries x secondaries) two-stage
+    # pipeline (~10,792 satellites x ~96 debris/rocket-body/synthetic objects,
+    # over a million candidate pairs, each coarse-filtered and many then
+    # SGP4-propagated). That took minutes and blew well past the frontend's
+    # 20s request timeout, so injecting debris always appeared to fail even
+    # though it had actually succeeded server-side by the time it timed out.
+    #
+    # The demo's entire purpose is guaranteeing *this one* conjunction
+    # (generate_verified_synthetic_debris already engineers the synthetic
+    # object's orbit to cross the target's at ~8km) -- it was never about
+    # discovering whether the new debris also has an unrelated close approach
+    # with some other satellite. Screening exactly the pair we already know
+    # about is both correct for that purpose and ~2 objects instead of
+    # ~10.9k, so it completes in well under a second. The general /screen
+    # endpoint (full catalog) is unchanged and still available as its own
+    # explicit, user-triggered action.
+    pair_data = [
+        {
+            "catalog_id": target.catalog_id,
+            "name": target.name,
+            "object_type": target.object_type,
+            "tle_line_1": target.raw_tle_line1,
+            "tle_line_2": target.raw_tle_line2,
+            "source": target.source,
+        },
+        {
+            "catalog_id": synth_db.catalog_id,
+            "name": synth_db.name,
+            "object_type": synth_db.object_type,
+            "tle_line_1": synth_db.raw_tle_line1,
+            "tle_line_2": synth_db.raw_tle_line2,
+            "source": synth_db.source,
+        },
+    ]
+    pipeline = ScreeningPipeline(threshold_km=50.0)
+    conjunctions = pipeline.run_screening(pair_data, horizon_minutes=90)
+
+    for c in conjunctions:
+        repo.save_conjunction(c)
 
     return {
         "message": f"Successfully injected synthetic object {synth_item['name']}.",

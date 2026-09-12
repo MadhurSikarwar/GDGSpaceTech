@@ -37,6 +37,18 @@ def get_db():
         db.close()
 
 
+# In-process counter bumped every time an object is written. routes.py keys
+# its short-lived /objects response cache off this so a stale snapshot is
+# never served: a plain time-based TTL alone would risk the frontend reloading
+# the catalog immediately after an ingest/inject (which it does) and not
+# seeing the new object for the rest of that TTL window.
+_objects_version = 0
+
+
+def get_objects_version() -> int:
+    return _objects_version
+
+
 class DatabaseRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -81,6 +93,9 @@ class DatabaseRepository:
 
         self.db.commit()
         self.db.refresh(db_obj)
+
+        global _objects_version
+        _objects_version += 1
 
         return db_obj
 

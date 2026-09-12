@@ -2,7 +2,6 @@ import math
 from datetime import datetime, timezone
 from typing import Tuple, Dict, Any, Optional
 from skyfield.api import EarthSatellite, load, wgs84
-from sgp4.api import Satrec, WGS72
 
 from shared.schemas.state import StateVector, Vector3
 from shared.schemas.object import DataQuality
@@ -16,8 +15,15 @@ class SGP4PropagationEngine:
         self.tle_line1 = tle_line1
         self.tle_line2 = tle_line2
         self.name = name
+        # skyfield's EarthSatellite is the only propagator actually used below
+        # (propagate_state calls self.satellite.at(t)). This used to also build
+        # a raw sgp4.api.Satrec from the same TLE via Satrec.twoline2rv() and
+        # store it as self.satrec -- nothing in the codebase ever read that
+        # attribute, so it was a second full TLE parse thrown away on every
+        # single propagation call. This class is instantiated per-object, so
+        # at ~10.9k tracked objects that was ~10.9k wasted parses on every
+        # GET /objects call alone.
         self.satellite = EarthSatellite(tle_line1, tle_line2, name, ts)
-        self.satrec = Satrec.twoline2rv(tle_line1, tle_line2)
 
     def propagate_state(self, target_dt: datetime) -> StateVector:
         """
