@@ -125,7 +125,14 @@ const TEXTURE_BASE = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/
 
 function buildLatLongGrid(radius) {
   const group = new THREE.Group();
-  const material = new THREE.LineBasicMaterial({ color: 0x7ce9da, transparent: true, opacity: 0.10, toneMapped: false });
+  const material = new THREE.LineBasicMaterial({
+    color: 0x7ce9da,
+    transparent: true,
+    opacity: 0.10,
+    toneMapped: false,
+    depthTest: true,
+    depthWrite: false,
+  });
   const SEGMENTS = 96;
   for (let lat = -60; lat <= 60; lat += 30) {
     const phi = (lat * Math.PI) / 180;
@@ -253,6 +260,8 @@ function dayNightMaterial(dayTex, nightTex, specTex, normalTex) {
         gl_FragColor = vec4(color, 1.0);
       }`,
     extensions: { derivatives: true },
+    depthTest: true,
+    depthWrite: true,
   });
 }
 
@@ -262,7 +271,14 @@ function buildEarth(renderer) {
 
   // Procedural placeholder shown immediately; swapped for real imagery the
   // moment it finishes loading. Keeps the globe never blank, even offline.
-  const earthMesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ map: buildEarthTexture(), shininess: 6, specular: 0x1a2636 }));
+  const earthMesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+    map: buildEarthTexture(),
+    shininess: 6,
+    specular: 0x1a2636,
+    depthTest: true,
+    depthWrite: true,
+  }));
+  earthMesh.renderOrder = 0;
   group.add(earthMesh);
 
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
@@ -274,6 +290,8 @@ function buildEarth(renderer) {
     // specular yet).
     if (textures.day && textures.night && textures.spec && textures.normal) {
       earthMesh.material = dayNightMaterial(textures.day, textures.night, textures.spec, textures.normal);
+      earthMesh.material.depthTest = true;
+      earthMesh.material.depthWrite = true;
     }
   };
   const loadTex = (file, key, sRGB) => {
@@ -294,7 +312,7 @@ function buildEarth(renderer) {
     tex.anisotropy = maxAniso;
     const cloudsMesh = new THREE.Mesh(
       new THREE.SphereGeometry(SCENE_EARTH_RADIUS * 1.015, 96, 96),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.7, depthWrite: false })
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.7, depthWrite: false, depthTest: true })
     );
     cloudsMesh.name = 'clouds';
     cloudsMesh.visible = pendingCloudsVisible; // respect a toggle clicked before this async load resolved
@@ -315,7 +333,9 @@ function buildEarth(renderer) {
     gapSize: 0.08,
     transparent: true,
     opacity: 0.4,
-    toneMapped: false
+    toneMapped: false,
+    depthTest: true,
+    depthWrite: false,
   });
   const axisLine = new THREE.Line(axisGeo, axisMat);
   axisLine.computeLineDistances();
@@ -343,6 +363,7 @@ function buildAtmosphere() {
     blending: THREE.AdditiveBlending,
     transparent: true,
     depthWrite: false,
+    depthTest: true,
   });
   return new THREE.Mesh(geo, mat);
 }
@@ -650,8 +671,9 @@ export function initGlobe(canvas) {
     ctx.beginPath(); ctx.arc(64, 64, 46, 0, Math.PI * 2); ctx.stroke();
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
-    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: true, toneMapped: false });
     const sprite = new THREE.Sprite(mat);
+    sprite.renderOrder = 3;
     sprite.scale.set(0.22, 0.22, 1);
     return sprite;
   }
@@ -677,6 +699,8 @@ export function initGlobe(canvas) {
           float rim = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.0);
           gl_FragColor = vec4(mix(color * 0.95, vec3(1.0), rim * 0.65), 1.0);
         }`,
+      depthTest: true,
+      depthWrite: true,
     });
   }
 
@@ -687,6 +711,7 @@ export function initGlobe(canvas) {
     const markerGeo = new THREE.SphereGeometry(0.055, 32, 32);
     const markerMat = markerMaterial(colorHex);
     const marker = new THREE.Mesh(markerGeo, markerMat);
+    marker.renderOrder = 3;
     marker.userData.objectId = objectId;
     if (obj?.state) marker.position.copy(kmToScene(obj.state.position_km));
     const ring = makeRingSprite(colorHexString(colorHex));
@@ -733,6 +758,103 @@ export function initGlobe(canvas) {
     if (ruler && (ruler.idA === objectId || ruler.idB === objectId)) clearDistanceRuler();
   }
 
+  // ---- trajectory rendering: Earth occlusion, sphere clipping, and depth testing ----
+  //
+  // Requirements:
+  // 1. A trajectory behind the Earth must be occluded naturally by the globe's depth buffer.
+  // 2. A trajectory segment that dips below Earth's radius (r < SCENE_EARTH_RADIUS = 2.0,
+  //    corresponding to 6378.137 km) must be clipped at the Earth surface and never render
+  //    inside the Earth's interior.
+  // 3. Complete mathematical trajectory remains intact in memory (entry.trajectory).
+  // 4. Direction arrows and markers must respect depth testing and never render inside Earth.
+
+  function clipSegmentSphere(p1, p2, radius) {
+    const r1 = Math.hypot(p1.x, p1.y, p1.z);
+    const r2 = Math.hypot(p2.x, p2.y, p2.z);
+    const dx = p2.x - p1.x, dy = p2.y - p1.y, dz = p2.z - p1.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < 1e-12) return [];
+
+    const a = d2;
+    const b = 2.0 * (p1.x * dx + p1.y * dy + p1.z * dz);
+    const c = r1 * r1 - radius * radius;
+    const disc = b * b - 4.0 * a * c;
+
+    if (r1 < radius && r2 < radius && disc <= 0) return [];
+
+    const roots = [];
+    if (disc >= 0) {
+      const sqrtDisc = Math.sqrt(disc);
+      const t1 = (-b - sqrtDisc) / (2.0 * a);
+      const t2 = (-b + sqrtDisc) / (2.0 * a);
+      if (t1 > 0.0 && t1 < 1.0) roots.push(t1);
+      if (t2 > 0.0 && t2 < 1.0) roots.push(t2);
+      roots.sort((x, y) => x - y);
+    }
+
+    const ptAt = (t) => new THREE.Vector3(p1.x + t * dx, p1.y + t * dy, p1.z + t * dz);
+
+    if (roots.length === 0) {
+      return (r1 >= radius && r2 >= radius) ? [{ pStart: p1, pEnd: p2, t0: 0, t1: 1 }] : [];
+    } else if (roots.length === 1) {
+      const t = roots[0];
+      const pCut = ptAt(t);
+      return (r1 >= radius)
+        ? [{ pStart: p1, pEnd: pCut, t0: 0, t1: t }]
+        : [{ pStart: pCut, pEnd: p2, t0: t, t1: 1 }];
+    } else {
+      const [t1, t2] = roots;
+      const pCut1 = ptAt(t1);
+      const pCut2 = ptAt(t2);
+      return (r1 >= radius)
+        ? [{ pStart: p1, pEnd: pCut1, t0: 0, t1: t1 }, { pStart: pCut2, pEnd: p2, t0: t2, t1: 1 }]
+        : [{ pStart: pCut1, pEnd: pCut2, t0: t1, t1: t2 }];
+    }
+  }
+
+  function buildTrajectoryMaterial() {
+    const uniforms = {
+      opacity: { value: 1.0 },
+      earthRadius: { value: SCENE_EARTH_RADIUS },
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader: `
+        attribute vec3 color;
+        varying vec3 vColor;
+        varying vec3 vPos;
+        void main() {
+          vColor = color;
+          vPos = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float opacity;
+        uniform float earthRadius;
+        varying vec3 vColor;
+        varying vec3 vPos;
+        void main() {
+          // Hard GPU discard prevents any rasterized fragment from rendering inside Earth's radius
+          if (length(vPos) < earthRadius - 0.0005) discard;
+          gl_FragColor = vec4(vColor, opacity);
+        }
+      `,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    });
+
+    // Provide opacity getter/setter so pulseArrival animations work transparently
+    Object.defineProperty(mat, 'opacity', {
+      get() { return uniforms.opacity.value; },
+      set(v) { uniforms.opacity.value = v; },
+    });
+
+    return mat;
+  }
+
   // ---- direction of travel ----
   // The gradient along the trajectory line already encodes time progression,
   // but it does not say which way the object is going when playback is
@@ -745,17 +867,31 @@ export function initGlobe(canvas) {
   const arrowQuat = new THREE.Quaternion();
   const arrowTangent = new THREE.Vector3();
 
-  function buildDirectionArrows(pts, baseColor) {
+  function buildDirectionArrows(rawPts, baseColor) {
+    if (rawPts.length < 4) return null;
+    // Only place arrows on points that are above the Earth surface
+    const pts = rawPts.filter((p) => p.length() >= SCENE_EARTH_RADIUS * 0.999);
     if (pts.length < 4) return null;
-    const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.75, toneMapped: false });
+
+    const mat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.75,
+      toneMapped: false,
+      depthTest: true,
+      depthWrite: false,
+    });
     const mesh = new THREE.InstancedMesh(arrowGeo, mat, ARROW_COUNT);
+    mesh.renderOrder = 2;
     mesh.frustumCulled = false;
     mesh.raycast = () => {};   // never steal a click from an object
     const dim = baseColor.clone().multiplyScalar(0.35);
+    let validCount = 0;
     for (let a = 0; a < ARROW_COUNT; a++) {
       // skip the very ends so arrows don't sit on top of the marker
       const t = (a + 0.5) / ARROW_COUNT;
       const i = Math.min(pts.length - 2, Math.floor(t * (pts.length - 1)));
+      // Skip placing an arrow across a clipped subterranean gap
+      if (pts[i].distanceTo(pts[i + 1]) > 0.35) continue;
       arrowTangent.subVectors(pts[i + 1], pts[i]);
       if (arrowTangent.lengthSq() < 1e-12) continue;
       arrowTangent.normalize();
@@ -764,10 +900,12 @@ export function initGlobe(canvas) {
       dummy.quaternion.copy(arrowQuat);
       dummy.scale.setScalar(1);
       dummy.updateMatrix();
-      mesh.setMatrixAt(a, dummy.matrix);
-      mesh.setColorAt(a, tmpColor.copy(dim).lerp(baseColor, t));
+      mesh.setMatrixAt(validCount, dummy.matrix);
+      mesh.setColorAt(validCount, tmpColor.copy(dim).lerp(baseColor, t));
+      validCount++;
     }
     dummy.quaternion.identity();   // leave the shared dummy neutral
+    mesh.count = validCount;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     return mesh;
@@ -775,24 +913,46 @@ export function initGlobe(canvas) {
 
   function setFocusTrajectory(objectId, trajectoryPoints, colorHex) {
     const entry = focusObject(objectId, colorHex);
+    // Retain full mathematical trajectory in state for animation, scrub, and calculations
     entry.trajectory = trajectoryPoints;
     disposeTrajectoryVisuals(entry);
 
-    const pts = trajectoryPoints.map((p) => kmToScene({ x: p.x, y: p.y, z: p.z }));
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const colors = new Float32Array(pts.length * 3);
+    const rawPts = trajectoryPoints.map((p) => kmToScene({ x: p.x, y: p.y, z: p.z }));
     const base = new THREE.Color(colorHex);
     const dim = base.clone().multiplyScalar(0.5);
-    for (let i = 0; i < pts.length; i++) {
-      const t = i / (pts.length - 1);
-      const c = dim.clone().lerp(base, 1 - t * 0.5);
-      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+
+    const posArray = [];
+    const colorArray = [];
+    const N = rawPts.length;
+
+    // Geometric clipping against Earth sphere radius: only surface/space segments are drawn
+    for (let i = 0; i < N - 1; i++) {
+      const p1 = rawPts[i];
+      const p2 = rawPts[i + 1];
+      const visibleSegs = clipSegmentSphere(p1, p2, SCENE_EARTH_RADIUS);
+      for (const seg of visibleSegs) {
+        const globalT0 = (i + seg.t0) / (N - 1);
+        const globalT1 = (i + seg.t1) / (N - 1);
+        const c0 = dim.clone().lerp(base, 1 - globalT0 * 0.5);
+        const c1 = dim.clone().lerp(base, 1 - globalT1 * 0.5);
+
+        posArray.push(seg.pStart.x, seg.pStart.y, seg.pStart.z);
+        posArray.push(seg.pEnd.x, seg.pEnd.y, seg.pEnd.z);
+        colorArray.push(c0.r, c0.g, c0.b);
+        colorArray.push(c1.r, c1.g, c1.b);
+      }
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1.0, toneMapped: false });
-    entry.line = new THREE.Line(geo, mat);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(posArray, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colorArray, 3));
+
+    const mat = buildTrajectoryMaterial();
+    entry.line = new THREE.LineSegments(geo, mat);
+    entry.line.renderOrder = 2;
     focusGroup.add(entry.line);
-    entry.arrows = buildDirectionArrows(pts, base);
+
+    entry.arrows = buildDirectionArrows(rawPts, base);
     if (entry.arrows) focusGroup.add(entry.arrows);
 
     // A pulseArrival() call that arrived before this object's trajectory had

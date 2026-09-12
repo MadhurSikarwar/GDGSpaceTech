@@ -178,7 +178,7 @@ async function runMitigationFlow(conj, maneuver) {
     : mitigationStatus === 'MONITORING'
     ? `Improved to ${fmtKm(postMiss)}, risk reduced. Continue monitoring.`
     : `Conjunction persists after burn — reassess maneuver plan.`;
-  toast(mitigationStatus === 'MITIGATED' ? '✓ CONJUNCTION MITIGATED' : mitigationStatus === 'MONITORING' ? '⚠ MONITORING' : '⚠ CONJUNCTION REMAINS', toastMsg, toastKind);
+  toast(mitigationStatus === 'MITIGATED' ? 'CONJUNCTION MITIGATED' : mitigationStatus === 'MONITORING' ? 'MONITORING' : 'CONJUNCTION REMAINS', toastMsg, toastKind);
 
   onApproveCb?.(conj, maneuver, mitigationStatus);
 }
@@ -488,9 +488,9 @@ function mitigationCard(conj, mitigation, manEntry, approval) {
   // Completed — full card with comparison matrix and outcome
   const outcomeClass = status === 'MITIGATED' ? 'outcome-mitigated' : status === 'MONITORING' ? 'outcome-monitoring' : 'outcome-active';
   const outcomeIcon  = status === 'MITIGATED' ? icons.check : icons.alertTriangle;
-  const outcomeLabel = status === 'MITIGATED' ? '✓ CONJUNCTION MITIGATED'
-                     : status === 'MONITORING' ? '⚠ MONITORING'
-                     : '⚠ CONJUNCTION REMAINS';
+  const outcomeLabel = status === 'MITIGATED' ? 'CONJUNCTION MITIGATED'
+                     : status === 'MONITORING' ? 'MONITORING'
+                     : 'CONJUNCTION REMAINS';
 
   const missImprovement = postMiss != null && preMiss != null ? ((postMiss - preMiss) / preMiss * 100) : null;
   const riskImprovement = postRisk != null && preRisk != null ? preRisk - postRisk : null;

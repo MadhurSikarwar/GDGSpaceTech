@@ -27,9 +27,9 @@ function mitigationBadge(conjId) {
   const cls = status === 'MITIGATED' ? 'mit-badge-mitigated'
             : status === 'MONITORING' ? 'mit-badge-monitoring'
             : 'mit-badge-active';
-  const label = status === 'MITIGATED' ? '✓ MITIGATED'
-              : status === 'MONITORING' ? '⚡ MONITORING'
-              : '⚠ ACTIVE';
+  const label = status === 'MITIGATED' ? 'MITIGATED'
+              : status === 'MONITORING' ? 'MONITORING'
+              : 'ACTIVE';
   return `<span class="conj-mit-badge ${cls}">${label}</span>`;
 }
 

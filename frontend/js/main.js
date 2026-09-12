@@ -210,7 +210,7 @@ function renderSelectionCard(obj) {
   document.getElementById('scName').textContent = obj.name;
   const badge = document.getElementById('scBadge');
   badge.className = `type-badge ${obj.object_type}`;
-  badge.innerHTML = `<span class="dot"></span>${obj.object_type.replace('_', ' ')}`;
+  badge.textContent = obj.object_type.replace('_', ' ');
   document.getElementById('scAlt').textContent = obj.state ? fmtKm(obj.state.altitude_km, 1) : '—';
   document.getElementById('scQuality').textContent = obj.data_quality?.quality ?? '—';
   document.getElementById('scAge').textContent = obj.data_quality ? `${fmtNum(obj.data_quality.data_age_hours, 2)}h` : '—';

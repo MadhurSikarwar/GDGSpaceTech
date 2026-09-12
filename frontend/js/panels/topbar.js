@@ -15,11 +15,7 @@ export function initTopbar({ onNavigate, onDemoInject, onToggleLog }) {
   document.getElementById('logToggleIcon').innerHTML = icons.terminal;
 
   const strip = document.getElementById('serviceStrip');
-  strip.innerHTML = SERVICES.map((s) => `
-    <div class="svc-chip" data-state="unknown" title="${s.label} · :${s.port}/health">
-      <span class="svc-dot"></span>${s.label}<span class="svc-label-state" data-state-text></span>
-    </div>
-  `).join('');
+  if (strip) strip.innerHTML = '';
 
   document.getElementById('navTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('.nav-tab');
@@ -53,16 +49,7 @@ export function initTopbar({ onNavigate, onDemoInject, onToggleLog }) {
 }
 
 function renderServiceChips() {
-  const chips = document.querySelectorAll('.svc-chip');
-  SERVICES.forEach((s, i) => {
-    const el = chips[i];
-    if (!el) return;
-    const status = state.serviceStatus[s.key];
-    const mapped = status === 'live' ? 'live' : status === 'sim' ? 'sim' : status === 'down' ? 'down' : 'unknown';
-    el.dataset.state = mapped;
-    const label = el.querySelector('[data-state-text]');
-    label.textContent = mapped === 'live' ? 'LIVE' : mapped === 'sim' ? 'FALLBACK' : mapped === 'down' ? 'DOWN' : '···';
-  });
+  // Service status pills removed from UI per design cleanup
 }
 
 function renderCounts() {
