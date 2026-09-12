@@ -133,3 +133,8 @@ docker-volumes/
 logs/
 tmp/
 temp/
+
+# Markdown
+HANDOFF_CONTEXT.md
+PHASES.md
+TILL_NOW.md
