@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  propagation-service:
+    build:
+      context: .
+      dockerfile: services/propagation/Dockerfile
+    container_name: orbitalguard-propagation
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./orbitalguard.db
+      - OFFLINE_MODE=false
+      - SCREENING_THRESHOLD_KM=50.0
+    restart: unless-stopped
+
+  # Placeholder for teammate Risk service
+  # risk-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/risk/Dockerfile
+  #   container_name: orbitalguard-risk
+  #   ports:
+  #     - "8001:8001"
+
+  # Placeholder for teammate Maneuver service
+  # maneuver-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/maneuver/Dockerfile
+  #   container_name: orbitalguard-maneuver
+  #   ports:
+  #     - "8002:8002"
+
+  # Placeholder for teammate Optimizer service
+  # optimizer-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/optimizer/Dockerfile
+  #   container_name: orbitalguard-optimizer
+  #   ports:
+  #     - "8003:8003"
