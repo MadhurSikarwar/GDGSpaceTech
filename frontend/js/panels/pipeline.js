@@ -1,4 +1,4 @@
-import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setRejection, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction } from '../state.js';
+import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setRejection, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction, setActivityTrace } from '../state.js';
 import * as api from '../api.js';
 import { icons } from '../icons.js';
 import { escapeHtml, fmtKm, fmtNum, fmtRelVel, fmtPc, riskTierColorVar, clamp, cleanLabel, cleanMethodName } from '../utils.js';
@@ -72,7 +72,9 @@ async function runPipeline(conjId) {
   pushLog(`Maneuver Agent ${manRes.live ? '(live)' : '(fallback)'} produced ${manRes.data.candidates.length} candidate burns for ${conjId}`);
 
   activeStageKey = 'optimizer'; render();
+  startActivityPolling(conjId);
   const decRes = await api.optimizeDecision(conj, manRes.data);
+  stopActivityPolling();
   setDecision(conjId, decRes);
   setSelectedManeuver(conjId, decRes.data.decision.recommended_maneuver_id);
   pushLog(`Optimizer ${decRes.live ? '(live)' : '(fallback)'} recommends ${decRes.data.decision.recommended_maneuver_id}`, 'ok');
@@ -96,6 +98,18 @@ function pcTier(pc) {
   if (pc >= 1.0e-5) return 'HIGH';
   if (pc >= 1.0e-6) return 'MEDIUM';
   return 'LOW';
+}
+
+let activityPollTimer = null;
+function startActivityPolling(conjId) {
+  stopActivityPolling();
+  activityPollTimer = setInterval(async () => {
+    const res = await api.getAgentActivity(conjId);
+    if (res.data) setActivityTrace(conjId, res.data);
+  }, 1000);
+}
+function stopActivityPolling() {
+  clearInterval(activityPollTimer);
 }
 
 async function runMitigationFlow(conj, maneuver) {
@@ -292,6 +306,12 @@ function renderBody(conjId) {
   html += conjunctionCard(conj);
   if (riskEntry) html += riskCard(riskEntry);
   if (manEntry) html += maneuverCard(manEntry, decEntry, selectedManeuverId, approval);
+  
+  const trace = state.activityTrace.get(conjId);
+  if (activeStageKey === 'optimizer' || trace) {
+    html += activityTraceCard(trace);
+  }
+
   if (decEntry) html += decisionCard(decEntry);
   if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval, rejection);
   if (approval) html += mitigationCard(conj, mitigation, manEntry, approval);
@@ -307,10 +327,33 @@ function renderBody(conjId) {
   const approveBtn = body.querySelector('#approveBtn');
   if (approveBtn) approveBtn.addEventListener('click', () => doApprove(conj, manEntry, selectedManeuverId));
   const rejectBtn = body.querySelector('#rejectBtn');
-  if (rejectBtn) rejectBtn.addEventListener('click', () => {
-    pushLog(`Operator rejected the current maneuver plan for ${conjId}. Awaiting revised decision.`, 'warn');
+  if (rejectBtn) rejectBtn.addEventListener('click', async () => {
+    const reason = prompt("Enter rejection reason (optional):") || "Operator rejected";
+    pushLog(`Operator rejected ${selectedManeuverId} for ${conjId}. Reason: ${reason}. Awaiting revised decision.`, 'warn');
+    toast('MANEUVER REJECTED', 'Agent is reconsidering the candidate selection...', 'warn');
     setRejection(conjId);
-    toast('MANEUVER REJECTED', 'Adjust the candidate selection or re-run the pipeline.', 'warn');
+    
+    // Switch UI back to optimizer stage
+    state.decisions.delete(conjId);
+    state.activityTrace.delete(conjId);
+    activeStageKey = 'optimizer';
+    render();
+    
+    // Start polling trace and send rejection
+    startActivityPolling(conjId);
+    const decRes = await api.submitFeedback(conjId, selectedManeuverId, "REJECTED", reason);
+    stopActivityPolling();
+    
+    if (decRes && decRes.data) {
+      setDecision(conjId, decRes);
+      setSelectedManeuver(conjId, decRes.data.decision?.recommended_maneuver_id || "NO_FEASIBLE_MANEUVER");
+      activeStageKey = 'approval';
+      render();
+    } else {
+      toast('FEEDBACK FAILED', 'Failed to submit feedback to optimizer.', 'warn');
+      activeStageKey = 'approval';
+      render();
+    }
   });
 }
 
@@ -422,16 +465,62 @@ function maneuverCard(manEntry, decEntry, selectedId, approved) {
   </div>`;
 }
 
+function activityTraceCard(trace) {
+  if (!trace) {
+    return `
+    <div class="stage-card" style="border-left: 2px solid var(--cyan)">
+      <div class="stage-card-head">
+        <span class="stage-card-eyebrow">04a · AGENT ACTIVITY TRACE</span>
+      </div>
+      <div class="mit-pending-msg">
+        <span class="spin" style="width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:8px"></span>
+        <span>Initializing decision agent...</span>
+      </div>
+    </div>`;
+  }
+  
+  const historyHtml = trace.tool_history.map(t => `
+    <div style="font-family: var(--font-mono); font-size: 10px; margin-bottom: 4px; border-left: 1px solid var(--ink-3); padding-left: 8px;">
+      <span style="color: var(--ink-2)">[${new Date(t.timestamp).toLocaleTimeString()}]</span>
+      <span style="color: ${t.success ? 'var(--cyan)' : 'var(--flame)'}">${t.tool_name}</span>
+      <span style="color: var(--ink-2)">→ ${t.success ? 'Completed' : 'Failed'}</span>
+    </div>
+  `).join('');
+
+  const failureReasonsHtml = Object.entries(trace.candidate_failure_reasons || {}).map(([cId, reason]) => `
+    <div style="font-family: var(--font-mono); font-size: 10px; margin-bottom: 4px; border-left: 1px solid var(--flame); padding-left: 8px; color: var(--flame);">
+      <span>Candidate ${cId}: Rejected - ${reason}</span>
+    </div>
+  `).join('');
+
+  return `
+  <div class="stage-card" style="border-left: 2px solid var(--cyan)">
+    <div class="stage-card-head">
+      <span class="stage-card-eyebrow">04a · AGENT ACTIVITY TRACE</span>
+      <span class="source-tag live">LIVE</span>
+    </div>
+    <div class="kv-grid" style="margin-bottom: 8px;">
+      <div class="kv-field"><label>Workflow State</label><div class="v">${escapeHtml(cleanLabel(trace.workflow_state))}</div></div>
+      <div class="kv-field"><label>Iterations</label><div class="v">${trace.iteration_count} / ${trace.max_iterations}</div></div>
+    </div>
+    <div style="background: var(--bg-surface); padding: 8px; border-radius: 4px; overflow-y: auto; max-height: 150px;">
+      ${historyHtml || '<div style="color:var(--ink-3);font-size:10px;font-family:var(--font-mono);">Waiting for agent activity...</div>'}
+      ${failureReasonsHtml ? `<div style="margin-top: 8px; margin-bottom: 4px; font-size: 9px; font-weight: 600; color: var(--ink-2);">CANDIDATE REJECTIONS</div>${failureReasonsHtml}` : ''}
+    </div>
+  </div>`;
+}
+
 function decisionCard(decEntry) {
   const d = decEntry.data;
+  const isFailure = d.decision.recommended_maneuver_id === "NO_FEASIBLE_MANEUVER";
   return `
-  <div class="stage-card">
+  <div class="stage-card" ${isFailure ? 'style="border-color: var(--flame-dim)"' : ''}>
     <div class="stage-card-head">
-      <span class="stage-card-eyebrow">04 · OPTIMIZER DECISION${sourceTag(decEntry.live)}</span>
+      <span class="stage-card-eyebrow">04b · OPTIMIZER DECISION${sourceTag(decEntry.live)}</span>
     </div>
-    <div class="decision-reason">
-      ${icons.info}
-      <p><b>Recommended: ${escapeHtml(d.decision.recommended_maneuver_id)}.</b> ${escapeHtml(cleanLabel(d.decision.reason))}</p>
+    <div class="decision-reason" ${isFailure ? 'style="background: var(--flame-dim); color: var(--flame);"' : ''}>
+      ${isFailure ? icons.alertTriangle : icons.info}
+      <p><b>${isFailure ? 'FAILURE:' : 'Recommended:'} ${escapeHtml(d.decision.recommended_maneuver_id)}.</b> ${escapeHtml(cleanLabel(d.decision.reason))}</p>
     </div>
   </div>`;
 }
@@ -449,6 +538,7 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
     </div>`;
   }
   const selected = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
+  const isFailure = selectedId === "NO_FEASIBLE_MANEUVER";
   
   if (rejection) {
     return `
@@ -457,6 +547,17 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
       <div class="approved-banner" style="background: var(--flame-dim); color: var(--flame); border-color: var(--flame-dim);">
         ${icons.close}
         <div>Maneuver <b>${escapeHtml(selected?.maneuver_id)}</b> was rejected by the operator. Please select a different candidate from the Maneuver stage above.</div>
+      </div>
+    </div>`;
+  }
+  
+  if (isFailure) {
+    return `
+    <div class="stage-card">
+      <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL GATE</span></div>
+      <div class="approval-gate" style="border-top: 1px solid var(--flame-dim);">
+        <div class="ag-label" style="color: var(--flame);">No Feasible Maneuvers Remain</div>
+        <div class="ag-desc">The decision agent has exhausted all candidates. Human flight director intervention is required.</div>
       </div>
     </div>`;
   }

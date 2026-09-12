@@ -52,6 +52,7 @@ class DecisionAgentOrchestrator:
         self.llm = llm_client or LLMClient()
         self.max_iterations = max_iterations
         self.max_maneuver_retries = max_maneuver_retries
+        self.active_contexts: Dict[str, DecisionContext] = {}
 
     def run(
         self,
@@ -104,6 +105,9 @@ class DecisionAgentOrchestrator:
             max_maneuver_retries=self.max_maneuver_retries,
             historical_feedback=historical_feedback,
         )
+
+        # Register active context for real-time activity trace polling
+        self.active_contexts[cid] = context
 
         # Fast-path: If preloaded candidates list is explicitly empty AND no conjunction
         # data is available, there is nothing to analyze — return immediately.

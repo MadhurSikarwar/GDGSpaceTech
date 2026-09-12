@@ -26,6 +26,7 @@ export const state = {
   risk: new Map(),          // conjunctionId -> { data: RiskAssessment, live: bool }
   maneuvers: new Map(),     // conjunctionId -> { data: ManeuverCandidates, live: bool }
   decisions: new Map(),     // conjunctionId -> { data: ManeuverDecision, live: bool }
+  activityTrace: new Map(), // conjunctionId -> { data, live }
   approvals: new Map(),     // conjunctionId -> { maneuverId, at }
   rejections: new Map(),    // conjunctionId -> { at }
   mitigations: new Map(),   // conjunctionId -> { status, preMiss, postMiss, preRisk, postRisk, deltaV, maneuver, computedAt }
@@ -153,6 +154,11 @@ export function setManeuvers(conjId, entry) {
 export function setDecision(conjId, entry) {
   state.decisions.set(conjId, entry);
   notify('decisions');
+}
+
+export function setActivityTrace(conjId, entry) {
+  state.activityTrace.set(conjId, entry);
+  notify('activityTrace');
 }
 
 export function setApproval(conjId, maneuverId) {

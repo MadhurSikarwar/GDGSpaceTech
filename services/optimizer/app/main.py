@@ -59,6 +59,14 @@ def list_agent_tools():
     }
 
 
+@app.get("/agent/activity/{conjunction_id}", response_model=Optional[DecisionContext])
+def get_agent_activity(conjunction_id: str):
+    """Get the live or most recent activity trace for a conjunction."""
+    if conjunction_id in _orchestrator.active_contexts:
+        return _orchestrator.active_contexts[conjunction_id]
+    return None
+
+
 @app.post("/agent/decide", response_model=DecisionContext)
 def agent_decide(
     candidates_payload: Optional[ManeuverCandidates] = Body(None, description="Direct ManeuverCandidates payload"),

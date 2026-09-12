@@ -155,11 +155,43 @@ export async function optimizeDecision(conj, maneuverCandidates) {
     const data = await fetchJSON(
       `${BASES.optimizer}/optimize-decision?conjunction_id=${encodeURIComponent(conj.conjunction_id)}`,
       { method: 'POST' },
-      6000
+      60000 // Extended timeout since optimization can take time
     );
     return { data, live: true };
   } catch (err) {
     return { data: localOptimizerDecision(conj, maneuverCandidates), live: false };
+  }
+}
+
+export async function getAgentActivity(conjunctionId) {
+  try {
+    const data = await fetchJSON(`${BASES.optimizer}/agent/activity/${encodeURIComponent(conjunctionId)}`, {}, 5000);
+    return { data, live: true };
+  } catch (err) {
+    return { data: null, live: false };
+  }
+}
+
+export async function submitFeedback(conjunctionId, maneuverId, status, reason) {
+  try {
+    const body = JSON.stringify({
+      conjunction_id: conjunctionId,
+      maneuver_id: maneuverId,
+      status: status,
+      reason: reason
+    });
+    const data = await fetchJSON(
+      `${BASES.optimizer}/agent/feedback`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      },
+      60000 // Reruns optimizer, can take time
+    );
+    return { data, live: true };
+  } catch (err) {
+    return { data: null, live: false };
   }
 }
 
