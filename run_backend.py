@@ -2,11 +2,18 @@
 OrbitalGuard Multi-Agent Unified Backend Launcher
 Starts all 4 agent microservices concurrently and handles clean shutdown on Ctrl+C.
 """
+import os
 import sys
 import time
 import subprocess
 import signal
 from typing import List
+
+# Auto-detect .venv in project root and switch to it if running under system Python
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "Scripts", "python.exe")
+if os.path.exists(VENV_PYTHON) and os.path.normcase(sys.executable) != os.path.normcase(VENV_PYTHON):
+    sys.exit(subprocess.call([VENV_PYTHON] + sys.argv))
 
 SERVICES = [
     {"name": "Tracking & Screening", "module": "services.propagation.app.main:app", "port": 8000},
