@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="satGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#60a5fa" />
+      <stop offset="50%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#1e40af" />
+    </linearGradient>
+    <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94a3b8" />
+      <stop offset="100%" stop-color="#475569" />
+    </linearGradient>
+  </defs>
+  <!-- Solar Panel Left -->
+  <path d="M15,40 L40,45 L35,60 L10,55 Z" fill="url(#panelGrad)" stroke="#1e3a8a" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Solar Panel Right -->
+  <path d="M60,40 L85,45 L90,60 L65,55 Z" fill="url(#panelGrad)" stroke="#1e3a8a" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Antenna / Dish -->
+  <ellipse cx="50" cy="20" rx="15" ry="8" fill="url(#satGrad)" stroke="#1e3a8a" stroke-width="2"/>
+  <path d="M50,20 L50,10" stroke="#1e3a8a" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="50" cy="10" r="3" fill="#60a5fa"/>
+  <!-- Dish Support -->
+  <path d="M45,26 L50,38 L55,26" fill="none" stroke="#475569" stroke-width="3" stroke-linecap="round"/>
+  <!-- Main Body -->
+  <path d="M40,35 L60,35 L65,65 L35,65 Z" fill="url(#bodyGrad)" stroke="#1e293b" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Lens / Sensor -->
+  <circle cx="50" cy="50" r="8" fill="#1e3a8a" stroke="#0f172a" stroke-width="2"/>
+  <circle cx="48" cy="48" r="3" fill="#60a5fa"/>
+  <!-- Engine Nozzle -->
+  <path d="M42,65 L58,65 L55,75 L45,75 Z" fill="#334155" stroke="#0f172a" stroke-width="2"/>
+  <!-- Thruster flame -->
+  <path d="M46,76 Q50,90 54,76 Z" fill="#3b82f6" opacity="0.8"/>
+  <path d="M48,76 Q50,85 52,76 Z" fill="#93c5fd"/>
+</svg>

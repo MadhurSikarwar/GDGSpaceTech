@@ -434,7 +434,7 @@ export function initGlobe(canvas) {
 
   // ---- camera orbit control (custom: drag to orbit, wheel to zoom) ----
   const DEFAULT_CAM = { theta: 0.9, phi: 1.15, radius: 6.2 };
-  const cam = { theta: DEFAULT_CAM.theta, phi: DEFAULT_CAM.phi, radius: DEFAULT_CAM.radius, targetTheta: DEFAULT_CAM.theta, targetPhi: DEFAULT_CAM.phi, targetRadius: DEFAULT_CAM.radius };
+  const cam = { theta: DEFAULT_CAM.theta, phi: DEFAULT_CAM.phi, radius: DEFAULT_CAM.radius, targetTheta: DEFAULT_CAM.theta, targetPhi: DEFAULT_CAM.phi, targetRadius: DEFAULT_CAM.radius, targetOffsetY: 0, offsetY: 0 };
   const MIN_R = 2.6, MAX_R = 16;
 
   // Cinematic camera flights (Explore Mode) layer on top of the existing
@@ -474,10 +474,10 @@ export function initGlobe(canvas) {
   function applyCamera() {
     camera.position.set(
       cam.radius * Math.sin(cam.phi) * Math.sin(cam.theta),
-      cam.radius * Math.cos(cam.phi),
+      cam.radius * Math.cos(cam.phi) + cam.offsetY,
       cam.radius * Math.sin(cam.phi) * Math.cos(cam.theta)
     );
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(0, cam.offsetY, 0);
   }
   applyCamera();
 
@@ -1264,6 +1264,7 @@ export function initGlobe(canvas) {
   // ---- resize ----
   function resize() {
     const rect = canvas.parentElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     renderer.setSize(rect.width, rect.height, false);
     camera.aspect = rect.width / rect.height;
     camera.updateProjectionMatrix();
@@ -1293,12 +1294,14 @@ export function initGlobe(canvas) {
       cam.theta = lerpAngle(flight.fromTheta, flight.toTheta, fe);
       cam.phi = lerp(flight.fromPhi, flight.toPhi, fe);
       cam.radius = lerp(flight.fromRadius, flight.toRadius, fe);
-      cam.targetTheta = cam.theta; cam.targetPhi = cam.phi; cam.targetRadius = cam.radius;
+      cam.offsetY = lerp(flight.fromOffsetY !== undefined ? flight.fromOffsetY : cam.offsetY, flight.toOffsetY !== undefined ? flight.toOffsetY : cam.offsetY, fe);
+      cam.targetTheta = cam.theta; cam.targetPhi = cam.phi; cam.targetRadius = cam.radius; cam.targetOffsetY = cam.offsetY;
       if (ft >= 1) { const cb = flight.onDone; flight = null; cb && cb(); }
     } else {
       cam.theta = lerp(cam.theta, cam.targetTheta, 0.14);
       cam.phi = lerp(cam.phi, cam.targetPhi, 0.14);
       cam.radius = lerp(cam.radius, cam.targetRadius, 0.14);
+      cam.offsetY = lerp(cam.offsetY, cam.targetOffsetY, 0.14);
     }
     applyCamera();
 
@@ -1405,6 +1408,20 @@ export function initGlobe(canvas) {
     setGroundStations(stations) { setGroundStations(stations); },
     setGroundStationsVisible(visible) { groundStationGroup.visible = visible; },
     setStationActive(stationId, active) { setStationActive(stationId, active); },
-    clearStationActive() { clearStationActive(); },
+    setLandingMode(isActive) {
+      cam.targetOffsetY = isActive ? 1.6 : 0;
+      cam.targetRadius = isActive ? 5.0 : DEFAULT_CAM.radius;
+      cam.targetTheta = isActive ? 0.3 : DEFAULT_CAM.theta;
+      cam.targetPhi = isActive ? 1.4 : DEFAULT_CAM.phi;
+      autoRotate = isActive;
+    },
+    enterMainFromLanding() {
+      flight = {
+        fromTheta: cam.theta, fromPhi: cam.phi, fromRadius: cam.radius, fromOffsetY: cam.offsetY,
+        toTheta: DEFAULT_CAM.theta, toPhi: DEFAULT_CAM.phi, toRadius: DEFAULT_CAM.radius, toOffsetY: 0,
+        start: performance.now(), duration: 2500, onDone: () => {}
+      };
+      autoRotate = false;
+    }
   };
 }

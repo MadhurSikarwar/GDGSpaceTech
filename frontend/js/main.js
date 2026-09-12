@@ -64,6 +64,14 @@ async function main() {
   await runBootSequence();
 
   globe = initGlobe(document.getElementById('globeCanvas'));
+  globe.setLandingMode(true);
+  
+  document.getElementById('landingEnterBtn').addEventListener('click', () => {
+    document.getElementById('landingOverlay').classList.remove('active');
+    document.getElementById('app').classList.remove('landing-mode');
+    globe.enterMainFromLanding();
+  });
+
   wireGlobeCallbacks();
   wireSelectionCard();
   wireTimelineControls();

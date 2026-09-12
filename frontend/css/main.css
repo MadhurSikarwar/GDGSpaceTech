@@ -99,6 +99,11 @@ svg { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em; f
   display: grid;
   grid-template-rows: 60px 1fr;
   background: var(--bg);
+  transition: grid-template-rows 1.5s var(--ease);
+}
+
+#app.landing-mode {
+  grid-template-rows: 0px 1fr;
 }
 
 main {
@@ -368,6 +373,13 @@ main {
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   background: radial-gradient(ellipse at 50% 30%, #0a0f18 0%, #05070a 70%);
+  transition: inset 1.5s var(--ease), border-radius 1.5s var(--ease), border-color 1.5s var(--ease);
+}
+
+#app.landing-mode .globe-stage {
+  inset: 0;
+  border-radius: 0;
+  border-color: transparent;
 }
 
 .catalog-float {
@@ -1084,4 +1096,91 @@ main {
 @media (max-width: 980px) {
   .catalog-float { width: 270px; }
   .service-strip { display: none; }
+}
+
+/* ==========================================================================
+   Landing Page Overlay
+   ========================================================================== */
+
+.landing-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 1000;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.2s var(--ease);
+}
+
+.landing-overlay.active {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.landing-content {
+  text-align: center;
+  color: #fff;
+  transform: translateY(-5vh);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.landing-subtitle {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 16px;
+  letter-spacing: 0.03em;
+}
+
+.landing-title {
+  font-family: var(--f-display);
+  font-weight: 700;
+  font-size: 42px;
+  line-height: 1.2;
+  margin-bottom: 40px;
+  letter-spacing: -0.01em;
+}
+
+.landing-btn {
+  background: var(--panel);
+  border: 1px solid var(--panel);
+  color: var(--ink-0);
+  font-family: var(--f-body);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 12px 28px;
+  border-radius: 40px;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.landing-btn:hover {
+  background: var(--inset);
+  border-color: var(--hair-strong);
+}
+
+/* Hide UI when in landing mode */
+#app.landing-mode .topbar,
+#app.landing-mode .hud-overlay,
+#app.landing-mode .catalog-float,
+#app.landing-mode ~ .hud-dock {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.5s ease;
+}
+
+#app:not(.landing-mode) .topbar,
+#app:not(.landing-mode) .hud-overlay,
+#app:not(.landing-mode) .catalog-float,
+#app:not(.landing-mode) ~ .hud-dock {
+  transition: opacity 1.5s ease 0.5s;
 }

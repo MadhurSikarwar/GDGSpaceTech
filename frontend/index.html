@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>OrbitalGuard — Mission Console</title>
-<link rel="icon" href="data:," />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="stylesheet" href="./css/main.css" />
 <script type="importmap">
 {
@@ -25,7 +25,14 @@
   </div>
 </div>
 
-<div id="app">
+<div id="landingOverlay" class="landing-overlay active">
+  <div class="landing-content">
+    <div class="landing-title" style="max-width: 800px; font-size: 36px;">OrbitalGuard &mdash; Multi-Agent Conjunction Screening &amp; Autonomous Evasive Maneuvering</div>
+    <button class="landing-btn" id="landingEnterBtn">Enter Mission Control &rarr;</button>
+  </div>
+</div>
+
+<div id="app" class="landing-mode">
 
   <header class="topbar">
     <div class="brand">
