@@ -9,6 +9,7 @@ from services.propagation.app.ingestion.celestrak import CelesTrakIngestionClien
 from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine
 from services.propagation.app.propagation.trajectory import generate_trajectory
 from services.propagation.app.screening.conjunction import ScreeningPipeline
+from services.propagation.app.screening.fine_filter import FineFilter
 from services.propagation.app.synthetic.generator import generate_verified_synthetic_debris
 from shared.schemas.object import OrbitalObject, ObjectType, OrbitalData, DataQuality, PropagationInfo
 from shared.schemas.trajectory import Trajectory
@@ -246,8 +247,14 @@ def inject_synthetic_demo(
         raw_data=synth_item.get("raw_data")
     )
 
-    # Trigger screening to register the guaranteed conjunction
-    conjunctions = run_screening_pipeline(horizon=90, threshold_km=50.0, db=db)
+    # Target conjunction screening specifically between target satellite and synthetic debris
+    fine_filter = FineFilter(threshold_km=50.0)
+    candidate = fine_filter.compute_conjunction_candidate(target_data, synth_item, horizon_minutes=90)
+
+    conjunctions = []
+    if candidate:
+        repo.save_conjunction(candidate)
+        conjunctions.append(candidate)
 
     return {
         "message": f"Successfully injected synthetic object {synth_item['name']}.",
