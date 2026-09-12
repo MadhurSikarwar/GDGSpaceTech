@@ -1,6 +1,7 @@
 """
 Decision Agent Context and State Schemas.
 Represents the explicit decision context for a single run of the agent.
+Phase 3 extensions: adaptive workflow state, iterative candidate tracking, failure states.
 """
 
 from datetime import datetime, timezone
@@ -41,6 +42,44 @@ class DecisionContext(BaseModel):
     current_stage: str = Field(default="ASSESSMENT")
     iteration_count: int = 0
     max_iterations: int = 8
+
+    # Phase 3: Adaptive workflow state tracking
+    risk_tier: Optional[str] = Field(
+        default=None,
+        description="Resolved risk tier (LOW/MEDIUM/HIGH/CRITICAL) from deterministic assessment."
+    )
+    workflow_state: str = Field(
+        default="INITIALIZED",
+        description="Current Phase 3 adaptive workflow state (e.g. MONITOR_ONLY, GENERATING_CANDIDATES, NO_FEASIBLE_MANEUVER)."
+    )
+    # Phase 3: Iterative maneuver loop tracking
+    maneuver_retry_count: int = Field(
+        default=0,
+        description="Number of candidate evaluation retries performed in this workflow run."
+    )
+    max_maneuver_retries: int = Field(
+        default=6,
+        description="Maximum allowed maneuver candidate evaluation retries before NO_FEASIBLE_MANEUVER."
+    )
+    candidate_generation_attempts: int = Field(
+        default=0,
+        description="Number of times candidate generation has been attempted."
+    )
+    # Phase 3: Explicit failure state
+    failure_state: Optional[str] = Field(
+        default=None,
+        description=(
+            "Explicit deterministic failure state when no feasible maneuver can be found: "
+            "PC_STILL_TOO_HIGH | DELTA_V_TOO_HIGH | DRIFT_CONSTRAINT_VIOLATED | "
+            "GROUND_STATION_CONSTRAINT_VIOLATED | SLOT_CONSTRAINT_VIOLATED | "
+            "SIMULATION_FAILED | NO_FEASIBLE_MANEUVER | MAX_ITERATIONS_REACHED | REQUIRED_DATA_UNAVAILABLE"
+        )
+    )
+    # Phase 3: Per-candidate rejection reasons (with structured failure code)
+    candidate_failure_reasons: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps candidate_id -> CandidateFailureReason enum value (explicit, not from LLM)."
+    )
     
     # Audit trail of tool invocations
     tool_history: List[ToolCallRecord] = Field(default_factory=list)

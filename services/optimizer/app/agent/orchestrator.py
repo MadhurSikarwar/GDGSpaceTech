@@ -1,7 +1,16 @@
 """
-OrbitalGuard Decision Agent Orchestrator.
+OrbitalGuard Decision Agent Orchestrator — Phase 3 enhanced.
+
 Orchestrates Phase 1 deterministic tools via an intelligent agent loop with
-strict physical boundaries, safeguards against infinite loops, and deterministic candidate selection.
+strict physical boundaries, safeguards against infinite loops, deterministic
+candidate selection, and Phase 3 adaptive risk-tier-driven workflow branching.
+
+Phase 3 additions:
+- AdaptiveWorkflowManager guides action selection based on risk tier.
+- Iterative maneuver generate -> evaluate -> reject/retry loop.
+- Explicit failure states (NO_FEASIBLE_MANEUVER, PC_STILL_TOO_HIGH, etc.).
+- Loop safety limits for retries, generation attempts, and total iterations.
+- LLM context summary includes workflow state hints.
 """
 
 import logging
@@ -13,6 +22,11 @@ from shared.schemas.maneuver import ManeuverCandidates, ManeuverCandidate
 from services.optimizer.app.agent.state import DecisionContext
 from services.optimizer.app.agent.registry import ToolRegistry
 from services.optimizer.app.agent.llm_client import LLMClient
+from services.optimizer.app.agent.workflow import (
+    AdaptiveWorkflowManager,
+    WorkflowState,
+    CandidateFailureReason,
+)
 from services.risk.app.database import get_conjunction_from_db, load_fixture_conjunctions
 
 logger = logging.getLogger(__name__)
@@ -22,6 +36,9 @@ class DecisionAgentOrchestrator:
     """
     Intelligent agent orchestrator that dynamically selects and executes Phase 1
     deterministic tools, interprets evidence, and enforces strict physics constraints.
+
+    Phase 3: Integrates AdaptiveWorkflowManager for risk-tier-driven branching
+    and iterative maneuver candidate evaluation with explicit failure states.
     """
 
     def __init__(
@@ -29,10 +46,12 @@ class DecisionAgentOrchestrator:
         registry: Optional[ToolRegistry] = None,
         llm_client: Optional[LLMClient] = None,
         max_iterations: int = 8,
+        max_maneuver_retries: int = 6,
     ):
         self.registry = registry or ToolRegistry()
         self.llm = llm_client or LLMClient()
         self.max_iterations = max_iterations
+        self.max_maneuver_retries = max_maneuver_retries
 
     def run(
         self,
@@ -43,13 +62,15 @@ class DecisionAgentOrchestrator:
     ) -> DecisionContext:
         """
         Execute the Decision Agent loop for a given conjunction encounter.
+        Phase 3: Uses AdaptiveWorkflowManager to enforce risk-tier branching
+        and the iterative maneuver retry loop.
         """
         # 1. Initialize context
         cid = conjunction_id or (candidate_payload.conjunction_id if candidate_payload else "UNKNOWN_CONJUNCTION")
         primary_id = candidate_payload.primary_object if candidate_payload else "25544"
         secondary_id = candidate_payload.secondary_object if candidate_payload else None
 
-        # Resolve candidate if missing
+        # Resolve conjunction if missing
         conjunction = candidate_payload
         if conjunction is None and conjunction_id:
             conjunction = get_conjunction_from_db(conjunction_id)
@@ -71,18 +92,54 @@ class DecisionAgentOrchestrator:
             maneuver_candidates=preloaded_candidates,
             status="ANALYZING",
             max_iterations=self.max_iterations,
+            max_maneuver_retries=self.max_maneuver_retries,
+        )
+
+        # Fast-path: If preloaded candidates list is explicitly empty AND no conjunction
+        # data is available, there is nothing to analyze — return immediately.
+        # This preserves backward-compatible behavior for empty-payload calls.
+        if (
+            preloaded_candidates is not None
+            and len(preloaded_candidates.candidates) == 0
+            and conjunction is None
+        ):
+            context.selected_maneuver_id = "NONE"
+            context.status = "RECOMMENDATION_GENERATED"
+            context.human_approval_required = False
+            context.workflow_state = WorkflowState.REQUIRED_DATA_UNAVAILABLE.value
+            context.explanation = (
+                "No candidates provided and conjunction data unavailable; "
+                "no maneuver analysis can be performed."
+            )
+            return context
+
+        # 2. Initialize Phase 3 adaptive workflow manager (one per orchestrator run)
+        workflow = AdaptiveWorkflowManager(
+            max_maneuver_retries=self.max_maneuver_retries,
+            max_workflow_iterations=self.max_iterations,
         )
 
         seen_tool_calls = set()
 
-        # 2. Agent Decision Loop
+        # 3. Agent Decision Loop
         while context.iteration_count < self.max_iterations:
             context.iteration_count += 1
 
-            # Prepare current context summary for reasoning
-            summary = self._build_context_summary(context)
+            # Sync workflow state into context for observability
+            context.workflow_state = workflow.workflow_state.value
+            workflow.annotate_context_with_workflow_state(context)
 
-            # Query LLM (or mock) for next action
+            # After risk is known, update context.risk_tier
+            if context.risk_assessment and context.risk_tier is None:
+                context.risk_tier = context.risk_assessment.risk_level
+
+            # Process any newly evaluated constraints into the workflow's candidate records
+            self._sync_constraint_evaluations_to_workflow(context, workflow)
+
+            # Build context summary including Phase 3 workflow hints
+            summary = self._build_context_summary(context, workflow)
+
+            # Query LLM (or override) for next action
             llm_action = self.llm.query_decision(
                 context_summary=summary,
                 available_tools=self.registry.get_definitions(),
@@ -90,13 +147,13 @@ class DecisionAgentOrchestrator:
                 llm_override=llm_override,
             )
 
-            # If LLM is unavailable or failed, trigger graceful deterministic fallback
+            # If LLM is unavailable, use Phase 3 adaptive deterministic fallback
             if not llm_action:
-                logger.info(f"LLM did not provide an action at iteration {context.iteration_count}; executing deterministic fallback step.")
-                should_continue = self._deterministic_step(context)
-                if not should_continue:
-                    break
-                continue
+                logger.info(
+                    f"LLM did not provide action at iteration {context.iteration_count}; "
+                    "executing Phase 3 adaptive deterministic step."
+                )
+                llm_action = workflow.next_deterministic_action(context)
 
             action_type = llm_action.get("action")
 
@@ -105,17 +162,38 @@ class DecisionAgentOrchestrator:
                 tool_name = llm_action.get("tool_name", "")
                 tool_args = llm_action.get("tool_args", {})
 
+                # Phase 3: Check if this tool is appropriate for the current risk tier
+                # (warn but do not block — the LLM may have a valid reason in MEDIUM tier)
+                tier = workflow.get_risk_tier(context)
+                if tier and not workflow.is_tool_allowed_for_context(tool_name, context):
+                    logger.warning(
+                        f"Tool '{tool_name}' is not in the allowed set for {tier} risk tier. "
+                        "Agent may be deviating from the expected workflow — proceeding but logging."
+                    )
+
                 # Safeguard: Prevent exact duplicate tool calls in a loop
                 call_sig = (tool_name, str(sorted(tool_args.items())))
                 if call_sig in seen_tool_calls:
-                    logger.warning(f"Duplicate tool call detected for {tool_name}; breaking duplicate loop.")
-                    # Force moving towards candidate evaluation or finalization
-                    self._deterministic_step(context)
-                    continue
+                    logger.warning(f"Duplicate tool call detected for {tool_name}; using workflow step instead.")
+                    # Phase 3: Use adaptive next action instead of forcing candidate eval
+                    fallback_action = workflow.next_deterministic_action(context)
+                    if fallback_action.get("action") == "make_decision":
+                        proposed_maneuver_id = fallback_action.get("selected_maneuver_id")
+                        proposed_explanation = fallback_action.get("explanation")
+                        self._finalize_decision(context, workflow, proposed_maneuver_id, proposed_explanation)
+                        break
+                    # Try the fallback tool call
+                    tool_name = fallback_action.get("tool_name", tool_name)
+                    tool_args = fallback_action.get("tool_args", tool_args)
+                    new_sig = (tool_name, str(sorted(tool_args.items())))
+                    if new_sig in seen_tool_calls:
+                        logger.warning("Fallback tool also duplicated; forcing finalization.")
+                        self._finalize_decision(context, workflow, None, None)
+                        break
 
                 seen_tool_calls.add(call_sig)
 
-                # Ensure required conjunction_id or catalog_id is passed if omitted by LLM
+                # Ensure required IDs are passed
                 if tool_name in ("assess_risk", "generate_maneuver_candidates") and "conjunction_id" not in tool_args:
                     tool_args["conjunction_id"] = context.conjunction_id
                 if tool_name == "check_ground_station_visibility" and "catalog_id" not in tool_args:
@@ -126,38 +204,114 @@ class DecisionAgentOrchestrator:
                 # Execute tool via registry
                 success, result, tool_summary = self.registry.execute(tool_name, tool_args, context)
 
-                # Continue next iteration to evaluate result
+                # Phase 3: After constraint evaluation, sync results into workflow tracker
+                if tool_name == "evaluate_maneuver_constraints" and success and result:
+                    self._sync_constraint_evaluations_to_workflow(context, workflow)
+                    # Check if all candidates are now exhausted and none feasible
+                    if workflow.all_candidates_exhausted(context) and not workflow.has_feasible_candidate(context):
+                        # Check retry budget
+                        if workflow.should_retry_maneuver(context):
+                            workflow.increment_retry()
+                            context.maneuver_retry_count = workflow.maneuver_retry_count
+                            workflow.transition_to(WorkflowState.ITERATING_RETRY)
+                        # else will be caught on next iteration by next_deterministic_action
 
-            # --- BRANCH B: FINAL DECISION REQUESTED BY LLM ---
+                # Phase 3: Track generation attempts
+                if tool_name == "generate_maneuver_candidates" and success:
+                    context.candidate_generation_attempts = workflow._generation_attempts
+
+            # --- BRANCH B: FINAL DECISION REQUESTED ---
             elif action_type == "make_decision":
                 proposed_maneuver_id = llm_action.get("selected_maneuver_id")
                 proposed_explanation = llm_action.get("explanation")
-                self._finalize_decision(context, proposed_maneuver_id, proposed_explanation)
+
+                # Phase 3: For LOW risk decisions, bypass constraint evaluation
+                tier = workflow.get_risk_tier(context)
+                if proposed_maneuver_id == "NONE" and tier == "LOW":
+                    context.selected_maneuver_id = "NONE"
+                    context.status = "RECOMMENDATION_GENERATED"
+                    context.human_approval_required = False
+                    context.workflow_state = WorkflowState.MONITOR_ONLY.value
+                    context.explanation = proposed_explanation or (
+                        f"Risk tier is LOW (score={context.risk_assessment.risk_score if context.risk_assessment else 'N/A'}/100). "
+                        "No avoidance maneuver required. Continued routine monitoring recommended."
+                    )
+                    break
+
+                self._finalize_decision(context, workflow, proposed_maneuver_id, proposed_explanation)
                 break
 
             else:
                 logger.warning(f"Unrecognized agent action: {action_type}")
-                self._deterministic_step(context)
+                # Phase 3: Use adaptive step instead of blind deterministic step
+                fallback = workflow.next_deterministic_action(context)
+                if fallback.get("action") == "make_decision":
+                    self._finalize_decision(context, workflow, fallback.get("selected_maneuver_id"), fallback.get("explanation"))
+                    break
 
-        # 3. If loop terminated due to iteration limit without final decision
+        # 4. If loop terminated due to iteration limit without final decision
         if context.status == "ANALYZING":
             if context.iteration_count >= self.max_iterations:
                 logger.warning("Decision agent reached maximum iterations without completing analysis.")
-                self._finalize_decision(context, None, None)
+                context.failure_state = CandidateFailureReason.MAX_ITERATIONS_REACHED.value
+                context.workflow_state = WorkflowState.MAX_ITERATIONS_REACHED.value
+                self._finalize_decision(context, workflow, None, None)
+
+        # Final sync
+        context.workflow_state = workflow.workflow_state.value
+        workflow.annotate_context_with_workflow_state(context)
+        if context.risk_assessment and context.risk_tier is None:
+            context.risk_tier = context.risk_assessment.risk_level
 
         return context
 
-    def _build_context_summary(self, context: DecisionContext) -> str:
-        """Format current verified evidence into a clear text summary for LLM."""
-        lines = [f"Conjunction ID: {context.conjunction_id} (Primary: {context.primary_object_id}, Secondary: {context.secondary_object_id or 'Unknown'})"]
+    def _sync_constraint_evaluations_to_workflow(
+        self,
+        context: DecisionContext,
+        workflow: AdaptiveWorkflowManager,
+    ):
+        """
+        Synchronise the context's constraint_evaluations dict into the workflow's
+        candidate records so the retry logic has accurate per-candidate outcomes.
+        """
+        for candidate_id, evaluation in context.constraint_evaluations.items():
+            # Skip if already recorded
+            existing = workflow.get_candidate_record(candidate_id)
+            if existing and existing.evaluated:
+                continue
+
+            record = workflow.record_candidate_result(
+                candidate_id=candidate_id,
+                feasible=evaluation.is_feasible,
+                evaluation=evaluation,
+                context=context,
+            )
+
+            # Propagate failure reason into context for observability
+            if not evaluation.is_feasible and record.failure_reason:
+                context.candidate_failure_reasons[candidate_id] = record.failure_reason.value
+
+    def _build_context_summary(self, context: DecisionContext, workflow: AdaptiveWorkflowManager) -> str:
+        """Format current verified evidence into a clear text summary for LLM,
+        including Phase 3 workflow state hints."""
+        lines = [
+            f"Conjunction ID: {context.conjunction_id} "
+            f"(Primary: {context.primary_object_id}, Secondary: {context.secondary_object_id or 'Unknown'})"
+        ]
 
         if context.conjunction_candidate:
             c = context.conjunction_candidate
-            lines.append(f"Encounter TCA: {c.tca} | Miss Distance: {c.closest_approach.distance_km} km | Relative Velocity: {c.closest_approach.relative_velocity_km_s} km/s")
+            lines.append(
+                f"Encounter TCA: {c.tca} | Miss Distance: {c.closest_approach.distance_km} km | "
+                f"Relative Velocity: {c.closest_approach.relative_velocity_km_s} km/s"
+            )
 
         if context.risk_assessment:
             r = context.risk_assessment
-            lines.append(f"Risk Assessment: Score {r.risk_score}/100 -> Tier {r.risk_level} (Pc: {r.collision_probability})")
+            lines.append(
+                f"Risk Assessment: Score {r.risk_score}/100 -> Tier {r.risk_level} "
+                f"(Pc: {r.collision_probability})"
+            )
         else:
             lines.append("Risk Assessment: NOT YET EVALUATED")
 
@@ -166,7 +320,10 @@ class DecisionAgentOrchestrator:
             lines.append(f"Space Weather: Kp={w.kp_index}, Ap={w.ap_index}, Drag Scalar={w.drag_activity_scalar:.2f}")
 
         if context.maneuver_candidates and context.maneuver_candidates.candidates:
-            lines.append(f"Maneuver Options: {len(context.maneuver_candidates.candidates)} candidates available ({[c.maneuver_id for c in context.maneuver_candidates.candidates]})")
+            lines.append(
+                f"Maneuver Options: {len(context.maneuver_candidates.candidates)} candidates "
+                f"({[c.maneuver_id for c in context.maneuver_candidates.candidates]})"
+            )
         else:
             lines.append("Maneuver Options: NOT YET GENERATED")
 
@@ -179,71 +336,87 @@ class DecisionAgentOrchestrator:
         else:
             lines.append("Constraint Evaluations: NOT YET EVALUATED")
 
+        # Phase 3: Append workflow state hint
+        lines.append("")
+        lines.append(workflow.build_workflow_context_hint(context))
+
         return "\n".join(lines)
-
-    def _deterministic_step(self, context: DecisionContext) -> bool:
-        """
-        Executes the next logically required deterministic tool when LLM is unavailable or needs guidance:
-        1. assess_risk -> 2. generate_maneuver_candidates -> 3. evaluate_maneuver_constraints -> finalize
-        """
-        # Step 1: Ensure risk assessment is performed
-        if not context.risk_assessment:
-            success, _, _ = self.registry.execute("assess_risk", {"conjunction_id": context.conjunction_id}, context)
-            return True
-
-        # Check if risk is LOW (no maneuver required)
-        if context.risk_assessment.risk_level == "LOW" and (context.risk_assessment.collision_probability is None or context.risk_assessment.collision_probability < 1e-5):
-            self._finalize_decision(context, "NONE", "No maneuver required. Conjunction risk is already within acceptable limits.")
-            return False
-
-        # Step 2: Ensure maneuver candidates are generated
-        if not context.maneuver_candidates or not context.maneuver_candidates.candidates:
-            success, _, _ = self.registry.execute("generate_maneuver_candidates", {"conjunction_id": context.conjunction_id, "satellite_id": context.primary_object_id}, context)
-            return True
-
-        # Step 3: Ensure maneuver constraints are evaluated
-        if not context.constraint_evaluations:
-            success, _, _ = self.registry.execute("evaluate_maneuver_constraints", {"conjunction_id": context.conjunction_id}, context)
-            return True
-
-        # Step 4: Finalize decision
-        self._finalize_decision(context, None, None)
-        return False
 
     def _finalize_decision(
         self,
         context: DecisionContext,
+        workflow: AdaptiveWorkflowManager,
         proposed_candidate_id: Optional[str],
         proposed_explanation: Optional[str],
     ):
         """
         Deterministically selects the optimal feasible maneuver and verifies explanation.
         STRICT PHYSICAL BOUNDARY: LLM cannot declare an infeasible candidate feasible!
+        Phase 3: Updates workflow state and failure_state fields explicitly.
         """
-        # 1. If risk is LOW or empty candidates
-        if context.risk_assessment and context.risk_assessment.risk_level == "LOW" and (context.risk_assessment.collision_probability is None or context.risk_assessment.collision_probability < 1e-5):
+        # LOW risk or NONE explicitly requested
+        if proposed_candidate_id == "NONE":
             context.selected_maneuver_id = "NONE"
             context.status = "RECOMMENDATION_GENERATED"
             context.human_approval_required = False
-            context.explanation = proposed_explanation or "Conjunction risk is within acceptable safe clearance limits; no avoidance burn is necessary."
+            context.workflow_state = WorkflowState.MONITOR_ONLY.value if (
+                context.risk_assessment and context.risk_assessment.risk_level == "LOW"
+            ) else workflow.workflow_state.value
+            context.explanation = proposed_explanation or "No maneuver required based on current risk assessment."
             return
 
-        # 2. Ensure constraints have been evaluated for all candidates
+        # Explicit NO_FEASIBLE_MANEUVER from workflow
+        if proposed_candidate_id == "NO_FEASIBLE_MANEUVER":
+            context.selected_maneuver_id = "NO_FEASIBLE_MANEUVER"
+            context.status = "NO_FEASIBLE_MANEUVER"
+            context.failure_state = CandidateFailureReason.NO_FEASIBLE_MANEUVER.value
+            context.human_approval_required = True
+            context.workflow_state = WorkflowState.NO_FEASIBLE_MANEUVER.value
+            reasons = [f"{m_id}: {r}" for m_id, r in context.rejection_reasons.items()]
+            context.explanation = proposed_explanation or (
+                f"NO FEASIBLE MANEUVER: All evaluated candidates violate operational constraints. "
+                f"Violations: {'; '.join(reasons)}. Human flight director intervention required."
+            )
+            return
+
+        # 1. LOW risk guard (even if no explicit NONE was sent)
+        if (context.risk_assessment
+                and context.risk_assessment.risk_level == "LOW"
+                and (context.risk_assessment.collision_probability is None
+                     or context.risk_assessment.collision_probability < 1e-5)):
+            context.selected_maneuver_id = "NONE"
+            context.status = "RECOMMENDATION_GENERATED"
+            context.human_approval_required = False
+            context.workflow_state = WorkflowState.MONITOR_ONLY.value
+            context.explanation = proposed_explanation or (
+                "Conjunction risk is within acceptable safe clearance limits; no avoidance burn is necessary."
+            )
+            return
+
+        # 2. Ensure constraints have been evaluated
         if context.maneuver_candidates and context.maneuver_candidates.candidates:
             if not context.constraint_evaluations:
-                self.registry.execute("evaluate_maneuver_constraints", {"conjunction_id": context.conjunction_id}, context)
+                self.registry.execute(
+                    "evaluate_maneuver_constraints",
+                    {"conjunction_id": context.conjunction_id},
+                    context,
+                )
+                self._sync_constraint_evaluations_to_workflow(context, workflow)
 
             all_candidates = context.maneuver_candidates.candidates
             feasible_candidates = [
                 c for c in all_candidates
-                if context.constraint_evaluations.get(c.maneuver_id) and context.constraint_evaluations[c.maneuver_id].is_feasible
+                if context.constraint_evaluations.get(c.maneuver_id)
+                and context.constraint_evaluations[c.maneuver_id].is_feasible
             ]
 
-            # Case A: No feasible candidates exist!
+            # Case A: No feasible candidates
             if not feasible_candidates:
                 context.selected_maneuver_id = "NO_FEASIBLE_MANEUVER"
                 context.status = "NO_FEASIBLE_MANEUVER"
+                context.failure_state = CandidateFailureReason.NO_FEASIBLE_MANEUVER.value
                 context.human_approval_required = True
+                context.workflow_state = WorkflowState.NO_FEASIBLE_MANEUVER.value
                 reasons = [f"{m_id}: {r}" for m_id, r in context.rejection_reasons.items()]
                 context.explanation = (
                     f"NO FEASIBLE MANEUVER: All evaluated candidates violate operational constraints. "
@@ -252,18 +425,20 @@ class DecisionAgentOrchestrator:
                 return
 
             # Case B: Feasible candidates exist
-            # Check if LLM proposed a valid, FEASIBLE candidate
+            # Verify LLM's proposed candidate is actually feasible
             chosen = None
-            if proposed_candidate_id and proposed_candidate_id != "NONE":
-                chosen = next((c for c in feasible_candidates if c.maneuver_id == proposed_candidate_id), None)
+            if proposed_candidate_id and proposed_candidate_id not in ("NONE", "NO_FEASIBLE_MANEUVER"):
+                chosen = next(
+                    (c for c in feasible_candidates if c.maneuver_id == proposed_candidate_id),
+                    None,
+                )
                 if not chosen:
                     logger.warning(
-                        f"LLM proposed candidate '{proposed_candidate_id}' which is NOT feasible or does not exist. "
-                        f"Overriding with authoritative deterministic minimum delta-V solution."
+                        f"LLM proposed candidate '{proposed_candidate_id}' is NOT feasible or does not exist. "
+                        "Overriding with authoritative deterministic minimum delta-V solution."
                     )
 
-            # Authoritative deterministic selection:
-            # Pick candidate that achieves LOW risk with minimum delta-V
+            # Authoritative deterministic selection: prefer LOW resulting_risk, minimum delta-V
             if not chosen:
                 low_risk_viable = [c for c in feasible_candidates if c.resulting_risk == "LOW"]
                 if low_risk_viable:
@@ -275,24 +450,36 @@ class DecisionAgentOrchestrator:
             context.selected_maneuver_id = chosen.maneuver_id
             context.status = "AWAITING_HUMAN_APPROVAL"
             context.human_approval_required = True
+            context.workflow_state = WorkflowState.RECOMMENDATION_READY.value
 
-            # Use LLM explanation if factual, or build authoritative factual explanation
             eval_info = context.constraint_evaluations.get(chosen.maneuver_id)
-            drift_str = f"with {eval_info.sma_drift_km:.2f} km slot drift" if eval_info and eval_info.sma_drift_km is not None else ""
-            pc_str = f"predicted Pc={chosen.predicted_pc:.2e}" if chosen.predicted_pc is not None else f"resulting risk {chosen.resulting_risk}"
+            drift_str = (
+                f"with {eval_info.sma_drift_km:.2f} km slot drift"
+                if eval_info and eval_info.sma_drift_km is not None else ""
+            )
+            pc_str = (
+                f"predicted Pc={chosen.predicted_pc:.2e}"
+                if chosen.predicted_pc is not None
+                else f"resulting risk {chosen.resulting_risk}"
+            )
 
             default_explanation = (
                 f"Selected {chosen.maneuver_id} ({chosen.burn_direction} {chosen.delta_v_m_s:.2f} m/s) "
                 f"providing {chosen.new_separation_km:.1f} km post-burn separation ({pc_str}) {drift_str}. "
                 f"All physical and slot retention constraints are verified satisfied. Escalated for human approval."
             )
-
-            context.explanation = proposed_explanation if (proposed_explanation and chosen.maneuver_id in proposed_explanation) else default_explanation
+            context.explanation = (
+                proposed_explanation
+                if (proposed_explanation and chosen.maneuver_id in proposed_explanation)
+                else default_explanation
+            )
         else:
-            # No candidates available and unable to generate
+            # No candidates available
             context.selected_maneuver_id = "NONE"
             context.status = "INCOMPLETE_ANALYSIS"
             context.human_approval_required = True
+            context.workflow_state = WorkflowState.REQUIRED_DATA_UNAVAILABLE.value
+            context.failure_state = CandidateFailureReason.REQUIRED_DATA_UNAVAILABLE.value
             context.explanation = "Unable to complete maneuver decision analysis; no candidate options available."
 
     def to_maneuver_decision(self, context: DecisionContext) -> ManeuverDecision:
