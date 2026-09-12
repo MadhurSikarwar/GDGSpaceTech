@@ -9,7 +9,7 @@ from shared.schemas.maneuver import ManeuverCandidates, ManeuverCandidate
 from shared.schemas.risk import RiskAssessment
 from shared.schemas.state import Vector3
 from services.risk.app.database import get_conjunction_from_db, load_fixture_conjunctions
-from services.risk.app.scoring import assess_conjunction_risk, classify_risk_level
+from services.risk.app.scoring import assess_conjunction_risk, classify_risk_level, PC_TIER_HIGH
 
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -237,9 +237,14 @@ def generate_maneuvers(
     # Gate: prefer Pc (the whole point of replacing miss-distance-only
     # alerting) when available; fall back to the risk-tier heuristic when
     # it isn't (e.g. a bare RiskAssessment body with no Pc field).
+    #
+    # Trigger at PC_TIER_HIGH (1e-5), not PC_CRITICAL_THRESHOLD (1e-4): the
+    # risk card already classifies anything >= 1e-5 as HIGH or worse, so
+    # gating the maneuver planner on the tighter 1e-4 line let a HIGH-tier
+    # Pc (e.g. 4e-5) fall through as "no maneuver required" right below a
+    # risk assessment that says HIGH -- a direct contradiction on screen.
     pc = target_assessment.collision_probability
-    from services.maneuver.app.delta_v_optimizer import PC_CRITICAL_THRESHOLD
-    needs_maneuver = (pc > PC_CRITICAL_THRESHOLD) if pc is not None else (target_assessment.risk_level != "LOW")
+    needs_maneuver = (pc >= PC_TIER_HIGH) if pc is not None else (target_assessment.risk_level != "LOW")
     if not needs_maneuver:
         result = ManeuverCandidates(
             conjunction_id=target_assessment.conjunction_id,
