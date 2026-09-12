@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Tuple, Optional
 
 
@@ -15,9 +15,7 @@ def parse_tle_epoch(tle_line1: str) -> datetime:
     # NORAD TLE year convention: 57-99 is 1957-1999, 00-56 is 2000-2056
     year = 1900 + year_two_digit if year_two_digit >= 57 else 2000 + year_two_digit
 
-    # Calculate day of year and fraction of day
     start_of_year = datetime(year, 1, 1, tzinfo=timezone.utc)
-    from datetime import timedelta
     epoch_dt = start_of_year + timedelta(days=day_fraction - 1)
     return epoch_dt
 
@@ -33,15 +31,10 @@ def parse_tle_orbital_elements(tle_line2: str) -> Dict[str, float]:
     mean_anomaly_deg = float(tle_line2[43:51].strip())
     mean_motion_rev_day = float(tle_line2[52:63].strip())
 
-    # Standard gravitational parameter for Earth mu (km^3 / s^2)
     MU_EARTH = 398600.4418
-    # Convert mean motion (rev/day) to mean motion (rad/s)
     n_rad_s = (mean_motion_rev_day * 2 * math.pi) / 86400.0
-    
-    # Semi-major axis a = (mu / n^2)^(1/3) in km
     semi_major_axis_km = (MU_EARTH / (n_rad_s ** 2)) ** (1.0 / 3.0)
     
-    # Earth mean equatorial radius in km
     EARTH_RADIUS_KM = 6378.137
     perigee_altitude_km = semi_major_axis_km * (1.0 - eccentricity) - EARTH_RADIUS_KM
     apogee_altitude_km = semi_major_axis_km * (1.0 + eccentricity) - EARTH_RADIUS_KM
@@ -74,4 +67,43 @@ def parse_tle_pair(line1: str, line2: str, name: str = "UNKNOWN") -> Dict[str, A
         "tle_line_1": line1.strip(),
         "tle_line_2": line2.strip(),
         "orbital_elements": elements
+    }
+
+
+def parse_omm_record(omm: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parse a CelesTrak OMM JSON record into normalized orbital data.
+    """
+    cat_id = str(omm.get("NORAD_CAT_ID", omm.get("catalog_id", "00000")))
+    name = omm.get("OBJECT_NAME", omm.get("name", f"CAT-{cat_id}"))
+    int_des = omm.get("OBJECT_ID", omm.get("international_designator", ""))
+
+    epoch_raw = omm.get("EPOCH", "")
+    if isinstance(epoch_raw, str) and epoch_raw:
+        try:
+            epoch_dt = datetime.fromisoformat(epoch_raw.replace("Z", "+00:00"))
+        except Exception:
+            epoch_dt = datetime.now(timezone.utc)
+    else:
+        epoch_dt = datetime.now(timezone.utc)
+
+    # If raw TLE lines are present in OMM, preserve them; otherwise check fields
+    line1 = omm.get("TLE_LINE1", omm.get("tle_line_1"))
+    line2 = omm.get("TLE_LINE2", omm.get("tle_line_2"))
+
+    obj_type = omm.get("OBJECT_TYPE", "SATELLITE")
+    if "DEB" in name.upper() or "DEBRIS" in name.upper():
+        obj_type = "DEBRIS"
+    elif "R/B" in name.upper() or "ROCKET" in name.upper():
+        obj_type = "ROCKET_BODY"
+
+    return {
+        "catalog_id": cat_id,
+        "name": name,
+        "object_type": obj_type,
+        "international_designator": int_des,
+        "epoch": epoch_dt,
+        "tle_line_1": line1,
+        "tle_line_2": line2,
+        "raw_omm": omm
     }

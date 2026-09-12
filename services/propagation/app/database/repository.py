@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -47,6 +47,8 @@ class DatabaseRepository:
         db_obj = self.db.query(ObjectDB).filter(ObjectDB.catalog_id == catalog_id).first()
         raw_str = json.dumps(raw_data) if raw_data else None
 
+        now_dt = datetime.now(timezone.utc)
+
         if not db_obj:
             db_obj = ObjectDB(
                 catalog_id=catalog_id,
@@ -58,7 +60,7 @@ class DatabaseRepository:
                 tle_line_1=tle_line_1,
                 tle_line_2=tle_line_2,
                 raw_data=raw_str,
-                ingested_at=datetime.utcnow()
+                ingested_at=now_dt
             )
             self.db.add(db_obj)
         else:
@@ -69,7 +71,7 @@ class DatabaseRepository:
             db_obj.tle_line_1 = tle_line_1
             db_obj.tle_line_2 = tle_line_2
             db_obj.raw_data = raw_str
-            db_obj.updated_at = datetime.utcnow()
+            db_obj.updated_at = now_dt
 
         self.db.commit()
         self.db.refresh(db_obj)
@@ -82,7 +84,7 @@ class DatabaseRepository:
                 epoch=epoch,
                 raw_tle=f"{tle_line_1}\n{tle_line_2}",
                 source=source,
-                timestamp=datetime.utcnow()
+                timestamp=now_dt
             )
             self.db.add(hist)
             self.db.commit()

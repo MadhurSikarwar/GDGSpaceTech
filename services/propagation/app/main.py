@@ -26,7 +26,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware for multi-agent and frontend inter-service access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,8 +34,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include versioned API routes (/api/v1)
+# Include versioned API routes (/api/v1/...)
 app.include_router(api_router)
+
+# Create unversioned alias router for backward-compatibility with direct /objects, /conjunctions, /health calls
+from fastapi import APIRouter
+unversioned_router = APIRouter(tags=["Unversioned Aliases"])
+
+# Import route handlers from api_router
+for route in api_router.routes:
+    # Strip prefix for unversioned alias
+    path = route.path.replace(settings.API_PREFIX, "")
+    if path and path != "/health":
+        unversioned_router.add_api_route(
+            path,
+            route.endpoint,
+            methods=route.methods,
+            response_model=route.response_model,
+            summary=f"{route.summary} (Alias)",
+            include_in_schema=False
+        )
+
+@unversioned_router.get("/health", include_in_schema=False)
+def unversioned_health():
+    from services.propagation.app.api.routes import get_health
+    from services.propagation.app.database.repository import get_db
+    db = next(get_db())
+    return get_health(db=db)
+
+app.include_router(unversioned_router)
 
 
 @app.get("/", include_in_schema=False)

@@ -13,6 +13,13 @@ def test_health_endpoint():
     assert json_data["status"] == "HEALTHY"
 
 
+def test_unversioned_health_endpoint():
+    res = client.get("/health")
+    assert res.status_code == 200
+    json_data = res.json()
+    assert json_data["status"] == "HEALTHY"
+
+
 def test_ingest_endpoint():
     res = client.post("/api/v1/ingest?group=active")
     assert res.status_code == 200
@@ -22,6 +29,14 @@ def test_ingest_endpoint():
 
 def test_get_objects():
     res = client.get("/api/v1/objects")
+    assert res.status_code == 200
+    objs = res.json()
+    assert isinstance(objs, list)
+    assert len(objs) > 0
+
+
+def test_unversioned_get_objects():
+    res = client.get("/objects")
     assert res.status_code == 200
     objs = res.json()
     assert isinstance(objs, list)
@@ -52,6 +67,13 @@ def test_inject_synthetic_demo_and_conjunctions():
     assert data["synthetic_object_id"] == "SYNTHETIC-99999"
 
     res_conj = client.get("/api/v1/conjunctions")
+    assert res_conj.status_code == 200
+    conjs = res_conj.json()
+    assert isinstance(conjs, list)
+
+
+def test_unversioned_conjunctions():
+    res_conj = client.get("/conjunctions")
     assert res_conj.status_code == 200
     conjs = res_conj.json()
     assert isinstance(conjs, list)

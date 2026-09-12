@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -28,4 +28,4 @@ class ConjunctionCandidate(BaseModel):
     closest_approach: ClosestApproach = Field(..., description="Closest approach distance and velocity")
     screening: ScreeningInfo = Field(..., description="Screening parameters")
     data_provenance: DataProvenance = Field(..., description="Data lineage metadata")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="UTC creation timestamp")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC creation timestamp")
