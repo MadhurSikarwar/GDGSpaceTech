@@ -1,0 +1,23 @@
+[
+  {
+    "conjunction_id": "CONJ-20260912-001",
+    "primary_object": "25544",
+    "secondary_object": "SYNTHETIC-99999",
+    "primary_object_name": "ISS (ZARYA)",
+    "secondary_object_name": "DEB-DEMO (SYNTHETIC_DEBRIS)",
+    "tca": "2026-09-12T11:45:00Z",
+    "closest_approach": {
+      "distance_km": 7.68,
+      "relative_velocity_km_s": 10.42
+    },
+    "screening": {
+      "threshold_km": 50.0,
+      "method": "SGP4_TRAJECTORY_SCREENING"
+    },
+    "data_provenance": {
+      "primary_source": "CelesTrak",
+      "propagator": "SGP4"
+    },
+    "created_at": "2026-09-12T11:00:24Z"
+  }
+]

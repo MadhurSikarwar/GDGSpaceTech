@@ -1,52 +1,220 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OrbitalGuard — Track. Predict. Avoid.</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 0;
-      background-color: #0b0f19;
-      color: #e2e8f0;
-      font-family: system-ui, -apple-system, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-    }
-    .card {
-      background: rgba(30, 41, 59, 0.7);
-      border: 1px solid #334155;
-      border-radius: 12px;
-      padding: 2rem;
-      max-width: 600px;
-      text-align: center;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
-    }
-    h1 { color: #38bdf8; margin-top: 0; }
-    .badge {
-      display: inline-block;
-      background: #0284c7;
-      color: white;
-      padding: 0.25rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.875rem;
-      font-weight: 600;
-      margin-bottom: 1rem;
-    }
-    code { background: #1e293b; color: #f43f5e; padding: 0.2rem 0.4rem; border-radius: 4px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OrbitalGuard — Mission Console</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="./css/main.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
 </head>
 <body>
-  <div class="card">
-    <div class="badge">ORBITALGUARD PLATFORM</div>
-    <h1>TRACK. PREDICT. AVOID.</h1>
-    <p>Orbital Intelligence & Conjunction Screening Engine</p>
-    <p>API Service is running at <code>http://localhost:8000/api/v1</code></p>
-    <p>Read <code>INTEGRATION_CONTRACT.md</code> for multi-agent schema documentation.</p>
+
+<div id="bootOverlay">
+  <div class="boot-inner">
+    <div class="boot-logo">
+      <div class="boot-ring boot-ring-1"></div>
+      <div class="boot-ring boot-ring-2"></div>
+      <div class="boot-ring boot-ring-3"></div>
+      <div class="boot-icon-center">⬡</div>
+    </div>
+    <div class="boot-brand">ORBITALGUARD</div>
+    <div class="boot-tagline">TRACK · PREDICT · AVOID</div>
+    <div class="boot-log" id="bootLog"></div>
+    <div class="boot-bar-wrap"><div class="boot-bar" id="bootBar"></div></div>
   </div>
+</div>
+
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" id="brandMark"></span>
+      <div class="brand-text">
+        <span class="brand-name">ORBITALGUARD</span>
+        <span class="brand-tag">TRACK · PREDICT · AVOID</span>
+      </div>
+    </div>
+
+    <nav class="nav-tabs" id="navTabs">
+      <button class="nav-tab active" data-view="orbit">ORBIT</button>
+      <button class="nav-tab" data-view="conjunctions">CONJUNCTIONS <span class="count" id="conjCount">0</span></button>
+      <button class="nav-tab" data-view="pipeline">PIPELINE</button>
+    </nav>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="service-strip" id="serviceStrip"></div>
+    <div class="mission-clock" id="missionClock">--:--:--Z</div>
+    <button class="btn btn-demo btn-md" id="demoBtn" title="POST /api/v1/demo/inject-synthetic">
+      <span id="demoBtnIcon"></span> INJECT SYNTHETIC DEBRIS
+    </button>
+  </header>
+
+  <main>
+
+    <!-- ============ ORBIT VIEW ============ -->
+    <section class="view view-orbit active" id="view-orbit">
+      <div class="globe-stage" id="globeStage">
+        <canvas id="globeCanvas"></canvas>
+        <div class="vignette"></div>
+
+        <div class="hud-overlay legend">
+          <div class="legend-item"><span class="legend-dot" style="background:#56e3d1"></span>SATELLITE</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f0a94e"></span>DEBRIS</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#a99bf2"></span>ROCKET BODY</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f0616e"></span>SYNTHETIC</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#8a95a8"></span>UNKNOWN</div>
+        </div>
+
+        <div class="hud-overlay frame-label">
+          <div>ECI FRAME · TEME</div>
+          <div><span class="fps" id="fpsValue">—</span> FPS · <span id="renderedCount">0</span> RENDERED</div>
+        </div>
+
+        <div class="hud-overlay selection-card hidden corner-brackets" id="selectionCard">
+          <div class="sc-head">
+            <div>
+              <div class="sc-name" id="scName">—</div>
+              <span class="type-badge" id="scBadge"><span class="dot"></span>—</span>
+            </div>
+            <button class="sc-close" id="scClose">✕</button>
+          </div>
+          <div class="sc-grid">
+            <div class="sc-field"><label>Altitude</label><span id="scAlt">—</span></div>
+            <div class="sc-field"><label>Data Quality</label><span id="scQuality">—</span></div>
+            <div class="sc-field"><label>Data Age</label><span id="scAge">—</span></div>
+            <div class="sc-field"><label>Catalog ID</label><span id="scCatId">—</span></div>
+          </div>
+          <div class="sc-vec" id="scVec">POS —<br/>VEL —</div>
+          <div class="sc-vec" id="scTrajStatus" style="margin-top:6px;color:var(--ink-2)">Loading 90-min trajectory…</div>
+          <button class="btn btn-primary btn-sm sc-explore-btn" id="scExploreBtn"><span id="scExploreIcon"></span> EXPLORE</button>
+          <div class="sc-explore hidden" id="scExplore"></div>
+        </div>
+
+        <div class="hud-overlay timeline-bar">
+          <div class="timeline-top">
+            <button class="tl-btn" id="tlResetBtn" title="Reset to now"></button>
+            <button class="tl-btn" id="tlPlayBtn" title="Play/Pause"></button>
+            <span class="tl-speed" id="tlSpeed">1×</span>
+            <div class="tl-track-wrap">
+              <div class="tl-track" id="tlTrack">
+                <div class="tl-fill" id="tlFill" style="width:0%"></div>
+                <div class="tl-handle" id="tlHandle" style="left:0%"></div>
+              </div>
+            </div>
+            <span class="tl-time" id="tlTime">T+00:00</span>
+          </div>
+          <div class="timeline-bottom">
+            <span class="tl-caption" id="tlCaption">Select an object to play its trajectory</span>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="tl-modes">
+                <span class="tl-mode active" id="modeInertial">Inertial</span>
+                <span class="tl-mode" id="modeFixed">Fixed</span>
+              </div>
+              <div class="tl-modes">
+                <span class="tl-mode active" id="toggleClouds">Clouds</span>
+              </div>
+              <span class="live-badge"><span class="dot"></span>LIVE</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hud-overlay camera-controls">
+          <button class="cam-btn" id="camResetBtn" title="Reset camera"></button>
+        </div>
+
+        <div class="hud-overlay drag-hint" id="dragHint">
+          <span>◐ DRAG TO ORBIT</span><span>⟳ SCROLL TO ZOOM</span>
+        </div>
+      </div>
+
+      <aside class="panel catalog-float">
+        <div class="panel-head">
+          <div class="panel-title-row">
+            <span class="panel-title">Catalog</span>
+            <span class="panel-sub" id="catalogCount">— OBJECTS</span>
+          </div>
+          <button class="catalog-collapse-btn" id="catalogCollapseBtn" title="Toggle catalog">‹</button>
+        </div>
+        <div class="filter-pills" id="filterPills">
+          <button class="pill active" data-type="ALL">ALL</button>
+          <button class="pill" data-type="SATELLITE">SATELLITE</button>
+          <button class="pill" data-type="DEBRIS">DEBRIS</button>
+          <button class="pill" data-type="ROCKET_BODY">R/B</button>
+          <button class="pill" data-type="SYNTHETIC_DEBRIS">SYNTHETIC</button>
+          <button class="pill" data-type="UNKNOWN">UNKNOWN</button>
+        </div>
+        <div class="search-row">
+          <input class="search-input" id="searchInput" type="text" placeholder="Search catalog…" />
+        </div>
+        <div class="catalog-list-head">
+          <span>NAME</span><span style="text-align:right">ALT KM</span><span style="text-align:right">AGE</span>
+        </div>
+        <div class="catalog-list" id="catalogList">
+          <div class="empty-state"><span class="spin" style="width:20px;height:20px;border:2px solid var(--hair-strong);border-top-color:var(--cyan);border-radius:50%;display:block"></span><p>Connecting to tracking service…</p></div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ CONJUNCTIONS VIEW ============ -->
+    <section class="view view-conjunctions" id="view-conjunctions">
+      <div class="view-inner">
+        <div class="section-head">
+          <div>
+            <div class="section-title">Conjunction Candidates</div>
+            <div class="section-desc">Flagged close-approach events from the two-stage SGP4 screening pipeline.</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" id="runScreenBtn">RUN SCREENING</button>
+          </div>
+        </div>
+        <div class="conj-grid" id="conjList">
+          <div class="empty-state"><p>Loading conjunction candidates…</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PIPELINE VIEW ============ -->
+    <section class="view view-pipeline" id="view-pipeline">
+      <div class="view-inner">
+        <div class="section-head">
+          <div>
+            <div class="section-title">Multi-Agent Decision Pipeline</div>
+            <div class="section-desc">Screening → Risk → Maneuver → Optimizer → Human approval, for one conjunction candidate at a time.</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="search-input" id="pipelineConjSelect" style="width:280px"></select>
+            <button class="btn btn-primary btn-md" id="runPipelineBtn">RUN PIPELINE</button>
+          </div>
+        </div>
+
+        <div class="stage-track" id="stageTrack"></div>
+        <div id="pipelineBody">
+          <div class="pipeline-empty">
+            <p>Select a conjunction candidate above, or click one from the Conjunctions tab, then run the pipeline.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<button class="btn btn-ghost btn-sm log-toggle" id="logToggle"><span id="logToggleIcon"></span> LOG</button>
+<div class="log-drawer" id="logDrawer">
+  <div class="log-drawer-head"><span>ACTIVITY LOG</span><span id="logCount">0 EVENTS</span></div>
+  <div class="log-list" id="logList"></div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script type="module" src="./js/main.js"></script>
 </body>
 </html>
