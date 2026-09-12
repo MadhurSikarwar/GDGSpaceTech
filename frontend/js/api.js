@@ -46,7 +46,7 @@ export async function checkHealth(base, timeoutMs = 2500) {
 export async function getObjects(objectType = null) {
   const qs = objectType ? `?object_type=${encodeURIComponent(objectType)}` : '';
   try {
-    return { data: await fetchJSON(`${BASES.tracking}/objects${qs}`), live: true };
+    return { data: await fetchJSON(`${BASES.tracking}/objects${qs}`, {}, 30000), live: true };
   } catch (err) {
     console.warn('[api] tracking /objects unreachable, using bundled fixture', err);
     const data = await fetchJSON(FIXTURES.objects);
