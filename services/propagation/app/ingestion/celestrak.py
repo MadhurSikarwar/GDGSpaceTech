@@ -27,7 +27,7 @@ class CelesTrakIngestionClient:
         url = f"{self.base_url}?GROUP={group}&FORMAT=tle"
         try:
             logger.info(f"Fetching CelesTrak TLEs from {url}")
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=2)
             if response.status_code == 200 and response.text.strip():
                 return self.parse_tle_response(response.text, source=f"CelesTrak:{group}")
             else:

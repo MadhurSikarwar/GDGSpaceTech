@@ -1,9 +1,11 @@
 import math
+import numpy as np
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
+from skyfield.api import load
 
 from services.propagation.app.config import settings
-from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine
+from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine, ts
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
 
 
@@ -23,8 +25,8 @@ class FineFilter:
     ) -> Optional[ConjunctionCandidate]:
         """
         Stage 2 Fine Screening:
-        Propagates candidate pair over horizon, evaluates distance at exact matching UTC timestamps in TEME frame.
-        Refines minimum distance around the closest sampled interval.
+        Vectorized high-performance SGP4 propagation over horizon in TEME frame.
+        Evaluates distances and refines local minimum around closest sampled interval.
         Returns a ConjunctionCandidate if refined minimum separation <= threshold_km.
         """
         if start_dt is None:
@@ -39,55 +41,49 @@ class FineFilter:
             secondary["tle_line_1"], secondary["tle_line_2"], secondary.get("name", "SECONDARY")
         )
 
-        min_dist_km = float("inf")
-        min_tca_dt = start_dt
-        min_rel_vel_kms = 0.0
+        # 1. Vectorized Coarse Scan
+        num_coarse_steps = int(horizon_minutes / initial_step_minutes) + 1
+        times_coarse = [start_dt + timedelta(minutes=i * initial_step_minutes) for i in range(num_coarse_steps)]
+        t_c = ts.from_datetimes(times_coarse)
 
-        current_dt = start_dt
-        end_dt = start_dt + timedelta(minutes=horizon_minutes)
+        pos_p = engine_p.satellite.at(t_c).position.km
+        pos_s = engine_s.satellite.at(t_c).position.km
 
-        # Initial 1-minute coarse scan
-        while current_dt <= end_dt:
-            state_p = engine_p.propagate_state(current_dt)
-            state_s = engine_s.propagate_state(current_dt)
+        dx = pos_p[0] - pos_s[0]
+        dy = pos_p[1] - pos_s[1]
+        dz = pos_p[2] - pos_s[2]
+        dists = np.sqrt(dx*dx + dy*dy + dz*dz)
 
-            # Frame & Timestamp aligned Euclidean distance calculation (TEME)
-            dx = state_p.position_km.x - state_s.position_km.x
-            dy = state_p.position_km.y - state_s.position_km.y
-            dz = state_p.position_km.z - state_s.position_km.z
-            dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        min_idx = int(np.argmin(dists))
+        min_dist_km = float(dists[min_idx])
+        min_tca_dt = times_coarse[min_idx]
 
-            if dist < min_dist_km:
-                min_dist_km = dist
-                min_tca_dt = current_dt
-
-            current_dt += timedelta(minutes=initial_step_minutes)
-
-        # Local time refinement scan around minimum candidate interval
+        # 2. Vectorized Local Time Refinement around minimum interval
         refined_start = min_tca_dt - timedelta(seconds=refinement_window_seconds / 2.0)
-        refined_end = min_tca_dt + timedelta(seconds=refinement_window_seconds / 2.0)
-        refined_dt = refined_start
+        num_refine = int(refinement_window_seconds / refinement_step_seconds) + 1
+        refined_times = [refined_start + timedelta(seconds=i * refinement_step_seconds) for i in range(num_refine)]
+        t_r = ts.from_datetimes(refined_times)
 
-        while refined_dt <= refined_end:
-            state_p = engine_p.propagate_state(refined_dt)
-            state_s = engine_s.propagate_state(refined_dt)
+        geo_p = engine_p.satellite.at(t_r)
+        geo_s = engine_s.satellite.at(t_r)
+        pos_pr = geo_p.position.km
+        pos_sr = geo_s.position.km
+        vel_pr = geo_p.velocity.km_per_s
+        vel_sr = geo_s.velocity.km_per_s
 
-            dx = state_p.position_km.x - state_s.position_km.x
-            dy = state_p.position_km.y - state_s.position_km.y
-            dz = state_p.position_km.z - state_s.position_km.z
-            dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        dxr = pos_pr[0] - pos_sr[0]
+        dyr = pos_pr[1] - pos_sr[1]
+        dzr = pos_pr[2] - pos_sr[2]
+        dists_r = np.sqrt(dxr*dxr + dyr*dyr + dzr*dzr)
 
-            if dist < min_dist_km:
-                min_dist_km = dist
-                min_tca_dt = refined_dt
-                
-                # Relative velocity vector magnitude
-                dvx = state_p.velocity_km_s.x - state_s.velocity_km_s.x
-                dvy = state_p.velocity_km_s.y - state_s.velocity_km_s.y
-                dvz = state_p.velocity_km_s.z - state_s.velocity_km_s.z
-                min_rel_vel_kms = math.sqrt(dvx*dvx + dvy*dvy + dvz*dvz)
+        min_r_idx = int(np.argmin(dists_r))
+        min_dist_km = float(dists_r[min_r_idx])
+        min_tca_dt = refined_times[min_r_idx]
 
-            refined_dt += timedelta(seconds=refinement_step_seconds)
+        dvx = float(vel_pr[0][min_r_idx] - vel_sr[0][min_r_idx])
+        dvy = float(vel_pr[1][min_r_idx] - vel_sr[1][min_r_idx])
+        dvz = float(vel_pr[2][min_r_idx] - vel_sr[2][min_r_idx])
+        min_rel_vel_kms = float(math.sqrt(dvx*dvx + dvy*dvy + dvz*dvz))
 
         # Check against configured screening threshold
         if min_dist_km <= self.threshold_km:
