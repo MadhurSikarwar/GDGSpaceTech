@@ -1,0 +1,58 @@
+[
+  {
+    "object_id": "25544",
+    "catalog_id": "25544",
+    "name": "ISS (ZARYA)",
+    "object_type": "SATELLITE",
+    "international_designator": "1998-067A",
+    "orbital_data": {
+      "epoch": "2026-09-12T08:15:30Z",
+      "source": "CelesTrak",
+      "format": "TLE",
+      "raw_tle_line1": "1 25544U 98067A   26255.34409722  .00016717  00000+0  30154-3 0  9993",
+      "raw_tle_line2": "2 25544  51.6416 230.1254 0006241 120.4512 245.6721 15.49812345421508"
+    },
+    "state": {
+      "timestamp": "2026-09-12T11:00:00Z",
+      "position_km": { "x": -2415.4, "y": 4812.1, "z": 4012.8 },
+      "velocity_km_s": { "x": -5.12, "y": -4.21, "z": 2.14 },
+      "altitude_km": 418.5,
+      "reference_frame": "TEME"
+    },
+    "propagation": {
+      "model": "SGP4",
+      "reference_frame": "TEME"
+    },
+    "data_quality": {
+      "data_age_hours": 2.74,
+      "quality": "HIGH"
+    }
+  },
+  {
+    "object_id": "SYNTHETIC-99999",
+    "catalog_id": "SYNTHETIC-99999",
+    "name": "DEB-DEMO (SYNTHETIC_DEBRIS)",
+    "object_type": "SYNTHETIC_DEBRIS",
+    "international_designator": "2026-999A",
+    "orbital_data": {
+      "epoch": "2026-09-12T11:00:00Z",
+      "source": "SyntheticGenerator",
+      "format": "STATE_VECTOR"
+    },
+    "state": {
+      "timestamp": "2026-09-12T11:00:00Z",
+      "position_km": { "x": -2407.2, "y": 4817.1, "z": 4015.8 },
+      "velocity_km_s": { "x": 4.85, "y": 3.92, "z": -2.81 },
+      "altitude_km": 421.2,
+      "reference_frame": "TEME"
+    },
+    "propagation": {
+      "model": "SGP4",
+      "reference_frame": "TEME"
+    },
+    "data_quality": {
+      "data_age_hours": 0.0,
+      "quality": "HIGH"
+    }
+  }
+]

@@ -96,8 +96,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-dist/
-build/
 .next/
 .nuxt/
 
@@ -113,6 +111,9 @@ build/
 *~
 *.sublime-workspace
 *.sublime-project
+
+# Claude / AI agents
+.claude/
 
 # Operating System
 .DS_Store
@@ -132,5 +133,3 @@ docker-volumes/
 logs/
 tmp/
 temp/
-
-
