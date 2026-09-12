@@ -11,37 +11,37 @@
 
 :root {
   /* surfaces (light shell) */
-  --void: #F6F4EF;
-  --bg: #F6F4EF;
-  --panel: #FFFCFC;
+  --void: #EAEAEA;
+  --bg: #F5F5F5;
+  --panel: #FFFFFF;
   --panel-raised: #FFFFFF;
-  --inset: #F6F4EF;
+  --inset: #F0F0F0;
 
   /* borders */
-  --hair: #D4D2CB;
-  --hair-strong: rgba(22, 43, 61, 0.15);
-  --hair-accent: rgba(23, 107, 120, 0.4);
+  --hair: #DDDDDD;
+  --hair-strong: rgba(0, 0, 0, 0.15);
+  --hair-accent: rgba(196, 81, 50, 0.4);
 
   /* text */
-  --ink-0: #162B3D;
-  --ink-1: #41505A;
-  --ink-2: #6D7478;
-  --ink-3: #9CA1A4;
+  --ink-0: #111111;
+  --ink-1: #444444;
+  --ink-2: #777777;
+  --ink-3: #AAAAAA;
 
   /* accents (categorical / status — deep-on-light, used sparingly) */
-  --cyan: #176B78;
-  --cyan-bright: #42B8B3;
-  --cyan-dim: rgba(23, 107, 120, 0.1);
-  --amber: #C47A27;
-  --amber-dim: rgba(196, 122, 39, 0.1);
-  --red: #B84A45;
-  --red-dim: rgba(184, 74, 69, 0.1);
-  --green: #32745B;
-  --green-dim: rgba(50, 116, 91, 0.1);
-  --violet: #7c3aed;
-  --violet-dim: rgba(124, 58, 237, 0.10);
-  --flame: #c2410c;
-  --flame-hover: #9a3412;
+  --cyan: #C45132;
+  --cyan-bright: #E56B47;
+  --cyan-dim: rgba(196, 81, 50, 0.1);
+  --amber: #D98324;
+  --amber-dim: rgba(217, 131, 36, 0.1);
+  --red: #A32A2A;
+  --red-dim: rgba(163, 42, 42, 0.1);
+  --green: #4A7C59;
+  --green-dim: rgba(74, 124, 89, 0.1);
+  --violet: #5E5063;
+  --violet-dim: rgba(94, 80, 99, 0.1);
+  --flame: #C45132;
+  --flame-hover: #A32A2A;
 
   /* type */
   --f-display: 'Source Serif 4', ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
@@ -425,8 +425,8 @@ main {
 .sc-field span { font-family: var(--f-mono); font-size: 11px; color: var(--ink-0); }
 .sc-vec { font-family: var(--f-mono); font-size: 9.5px; color: var(--ink-1); background: var(--inset); padding: 6px 8px; border-radius: var(--radius); margin-top: 8px; line-height: 1.6; }
 
-.sc-actions { display: flex; gap: 8px; margin-top: 10px; }
-.sc-actions .btn { flex: 1; justify-content: center; margin-top: 0; padding: 6px 8px; font-size: 10px; }
+.sc-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.sc-actions .btn { width: 100%; justify-content: center; margin-top: 0; padding: 8px 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
 .sc-explore-btn { width: 100%; justify-content: center; }
 .selection-card.exploring { width: 306px; animation: none; }
 
