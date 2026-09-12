@@ -9,6 +9,15 @@ export function fmtKm(v, digits = 1) {
   return `${fmtNum(v, digits)} km`;
 }
 
+export function fmtRelVel(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const num = Number(v);
+  if (num >= 1.0) return `${num.toFixed(2)} km/s`;
+  if (num >= 0.01) return `${num.toFixed(3)} km/s`;
+  if (num > 0) return `${(num * 1000).toFixed(1)} m/s`;
+  return '0.00 km/s';
+}
+
 export function fmtUTC(date) {
   const d = date instanceof Date ? date : new Date(date);
   const pad = (n) => String(n).padStart(2, '0');

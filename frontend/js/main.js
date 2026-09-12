@@ -6,7 +6,7 @@ import { initCatalog } from './panels/catalog.js';
 import { initConjunctions } from './panels/conjunctions.js';
 import { initPipeline, openConjunction } from './panels/pipeline.js';
 import { icons } from './icons.js';
-import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml } from './utils.js';
+import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml, fmtRelVel } from './utils.js';
 
 const TYPE_COLOR_HEX = { SATELLITE: 0x56e3d1, DEBRIS: 0xf0a94e, ROCKET_BODY: 0xa99bf2, SYNTHETIC_DEBRIS: 0xf0616e, UNKNOWN: 0x8a95a8 };
 const PRIMARY_COLOR = 0x56e3d1;
@@ -394,7 +394,7 @@ function renderExploreCard(obj, conj) {
           <div><span class="k">With</span><span class="v">${escapeHtml(otherName || otherId)}</span></div>
           <div><span class="k">TCA</span><span class="v">${fmtCountdown(mins)}</span></div>
           <div><span class="k">Min Separation</span><span class="v">${fmtKm(conj.closest_approach.distance_km)}</span></div>
-          <div><span class="k">Rel. Velocity</span><span class="v">${conj.closest_approach.relative_velocity_km_s.toFixed(2)} km/s</span></div>
+          <div><span class="k">Rel. Velocity</span><span class="v">${fmtRelVel(conj.closest_approach.relative_velocity_km_s)}</span></div>
         </div>
         <button class="btn btn-primary btn-sm sc-goto-pipeline" id="scGotoPipeline">RISK ANALYSIS ${icons.chevronRight}</button>
       </div>`;

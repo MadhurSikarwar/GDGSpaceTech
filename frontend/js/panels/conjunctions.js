@@ -1,6 +1,6 @@
 import { state, subscribe } from '../state.js';
 import { icons } from '../icons.js';
-import { escapeHtml, fmtKm, fmtCountdown, minutesUntil } from '../utils.js';
+import { escapeHtml, fmtKm, fmtRelVel, fmtCountdown, minutesUntil } from '../utils.js';
 
 let onOpen = null;
 
@@ -15,8 +15,22 @@ export function initConjunctions({ onOpenConjunction, onRunScreen }) {
   document.getElementById('runScreenBtn').addEventListener('click', onRunScreen);
 
   subscribe((topic) => {
-    if (topic === 'conjunctions' || topic === 'risk') renderConjunctions();
+    if (topic === 'conjunctions' || topic === 'risk' || topic === 'mitigations') renderConjunctions();
   });
+}
+
+/** Returns mitigation status badge HTML for a conjunction card. */
+function mitigationBadge(conjId) {
+  const mit = state.mitigations?.get(conjId);
+  if (!mit || mit.status === 'running') return '';
+  const { status } = mit;
+  const cls = status === 'MITIGATED' ? 'mit-badge-mitigated'
+            : status === 'MONITORING' ? 'mit-badge-monitoring'
+            : 'mit-badge-active';
+  const label = status === 'MITIGATED' ? '✓ MITIGATED'
+              : status === 'MONITORING' ? '⚡ MONITORING'
+              : '⚠ ACTIVE';
+  return `<span class="conj-mit-badge ${cls}">${label}</span>`;
 }
 
 function renderConjunctions() {
@@ -43,6 +57,7 @@ function renderConjunctions() {
     const riskLevel = riskEntry?.data?.risk_level || 'PENDING';
     const mins = minutesUntil(c.tca);
     const distCls = c.closest_approach.distance_km < 10 ? 'crit' : c.closest_approach.distance_km < 25 ? 'warn' : '';
+    const mitBadge = mitigationBadge(c.conjunction_id);
     return `
       <div class="conj-card risk-${riskLevel}" data-id="${escapeHtml(c.conjunction_id)}">
         <div class="conj-pair">
@@ -52,8 +67,9 @@ function renderConjunctions() {
         </div>
         <div class="conj-metric"><label>TCA</label><span class="v">${fmtCountdown(mins)}</span></div>
         <div class="conj-metric"><label>Distance</label><span class="v ${distCls}">${fmtKm(c.closest_approach.distance_km)}</span></div>
-        <div class="conj-metric"><label>Rel. Velocity</label><span class="v">${c.closest_approach.relative_velocity_km_s.toFixed(2)} km/s</span></div>
+        <div class="conj-metric"><label>Rel. Velocity</label><span class="v">${fmtRelVel(c.closest_approach.relative_velocity_km_s)}</span></div>
         <span class="risk-tag ${riskLevel}">${riskLevel}${riskEntry && !riskEntry.live ? ' ·SIM' : ''}</span>
+        ${mitBadge}
         <span class="conj-arrow">${icons.chevronRight}</span>
       </div>`;
   }).join('');

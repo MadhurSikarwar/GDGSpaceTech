@@ -23,14 +23,17 @@ def format_tle_line(line_raw: str) -> str:
     return f"{line_body}{chk}"
 
 
-# Predefined physical encounter profiles producing different encounter geometries & miss distances
+# Astrodynamically calibrated physical encounter profiles:
+# For two inclined orbits intersecting at the line of nodes, the along-track shift to synchronize TCA is:
+# d_ma = -d_raan * cos(inclination) + miss_offset
+# This produces genuine crossing relative velocities (0.5 to 3.5+ km/s) via ||v_target - v_debris|| in SGP4.
 ENCOUNTER_PROFILES = [
-    # (name, raan_delta_deg, ma_delta_deg, inc_delta_deg, tca_offset_min, target_desc)
-    ("CRITICAL_GRAZE", 0.0075, 0.0045, 0.0030, 28.0, "Close coplanar graze (~1.2 km)"),
-    ("HIGH_CROSSING", 0.0160, 0.0120, 0.0080, 42.0, "Inclined orbital crossing (~3.2 km)"),
-    ("MEDIUM_PROXIMITY", 0.0340, 0.0220, 0.0150, 58.0, "High-altitude proximity pass (~6.8 km)"),
-    ("CRITICAL_CONVERGING", 0.0050, 0.0035, -0.0040, 35.0, "Direct converging trajectory (~0.9 km)"),
-    ("HIGH_ELEVATION", 0.0220, 0.0160, -0.0100, 48.0, "Offset descent crossing (~4.1 km)"),
+    # (name, d_raan_deg, miss_offset_deg, default_tca_min, target_desc)
+    ("CRITICAL_CROSSING", 8.0, 0.0035, 28.0, "High-angle orbital crossing (~1.2 km miss, ~0.8-1.5 km/s rel-vel)"),
+    ("URGENT_CONVERGING", 15.0, 0.0060, 42.0, "Transverse plane intersection (~3.0 km miss, ~1.5-2.8 km/s rel-vel)"),
+    ("MODERATE_ENCOUNTER", 6.0, 0.0100, 52.0, "Shallow crossing encounter (~6.5 km miss, ~0.6-1.1 km/s rel-vel)"),
+    ("HIGH_KINETIC_CROSS", 22.0, 0.0045, 36.0, "High relative-velocity cross-track intercept (~2.2 km miss, ~2.5-4.0 km/s rel-vel)"),
+    ("HIGH_ALT_GRAZE", 10.0, 0.0150, 48.0, "Offset descent crossing (~8.0 km miss, ~1.0-1.8 km/s rel-vel)"),
 ]
 
 _injection_counter = 0
@@ -62,7 +65,7 @@ def generate_verified_synthetic_debris(
         profile_idx = (_injection_counter + abs(hash(cat_id))) % len(ENCOUNTER_PROFILES)
         profile = ENCOUNTER_PROFILES[profile_idx]
 
-    profile_name, raan_delta, ma_delta, inc_delta, default_tca_min, desc = profile
+    profile_name, d_raan, miss_offset, default_tca_min, desc = profile
     eff_tca_min = tca_offset_minutes if tca_offset_minutes is not None else default_tca_min
 
     engine = SGP4PropagationEngine(line1, line2, raw_name)
@@ -84,12 +87,15 @@ def generate_verified_synthetic_debris(
     line1_base = f"1 {synth_num_str}U {intl_desig:<8} {epoch_str}  .00010000  00000+0  20000-3 0  999"
     synth_line1 = format_tle_line(line1_base)
 
-    # Parse and modify target line 2 orbital elements to physically create the encounter
-    inc_deg = float(line2[8:16].strip()) + inc_delta
-    raan_deg = (float(line2[17:25].strip()) + raan_delta) % 360.0
+    # Parse and modify target line 2 orbital elements with physical line-of-nodes geometry
+    inc_deg = float(line2[8:16].strip())
+    cos_i = math.cos(math.radians(inc_deg))
+    d_ma = -d_raan * cos_i + miss_offset
+
+    raan_deg = (float(line2[17:25].strip()) + d_raan) % 360.0
     ecc_str = line2[26:33].strip()
     argp_deg = float(line2[34:42].strip())
-    ma_deg = (float(line2[43:51].strip()) + ma_delta) % 360.0
+    ma_deg = (float(line2[43:51].strip()) + d_ma) % 360.0
     mm_str = line2[52:63].strip()
     rev_str = line2[63:68].strip()
 
