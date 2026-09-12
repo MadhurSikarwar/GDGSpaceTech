@@ -8,10 +8,10 @@ import { initPipeline, openConjunction } from './panels/pipeline.js';
 import { icons } from './icons.js';
 import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml, fmtRelVel } from './utils.js';
 
-const TYPE_COLOR_HEX = { SATELLITE: 0x56e3d1, DEBRIS: 0xf0a94e, ROCKET_BODY: 0xa99bf2, SYNTHETIC_DEBRIS: 0xf0616e, UNKNOWN: 0x8a95a8 };
-const PRIMARY_COLOR = 0x56e3d1;
-const SECONDARY_COLOR = 0xf0616e;
-const POST_MANEUVER_COLOR = 0x4ad991;
+const TYPE_COLOR_HEX = { SATELLITE: 0x42b8b3, DEBRIS: 0xc47a27, ROCKET_BODY: 0x6d7478, SYNTHETIC_DEBRIS: 0xb84a45, UNKNOWN: 0xd4d2cb };
+const PRIMARY_COLOR = 0x176b78;
+const SECONDARY_COLOR = 0xb84a45;
+const POST_MANEUVER_COLOR = 0x32745b;
 
 let globe;
 const trajectoryCache = new Map();

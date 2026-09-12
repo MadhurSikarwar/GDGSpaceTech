@@ -6,11 +6,11 @@ const SCENE_EARTH_RADIUS = 2.0;
 const KM_TO_SCENE = SCENE_EARTH_RADIUS / EARTH_RADIUS_KM;
 
 const TYPE_COLOR = {
-  SATELLITE: 0x56e3d1,
-  DEBRIS: 0xf0a94e,
-  ROCKET_BODY: 0xa99bf2,
-  SYNTHETIC_DEBRIS: 0xf0616e,
-  UNKNOWN: 0x8a95a8,
+  SATELLITE: 0x42b8b3,
+  DEBRIS: 0xc47a27,
+  ROCKET_BODY: 0x6d7478,
+  SYNTHETIC_DEBRIS: 0xb84a45,
+  UNKNOWN: 0xd4d2cb,
 };
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -94,7 +94,7 @@ function buildEarthTexture() {
 }
 
 function buildStarfield() {
-  const count = 3200;
+  const count = 12000;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const tint = new THREE.Color();
@@ -115,7 +115,7 @@ function buildStarfield() {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mat = new THREE.PointsMaterial({ size: 0.055, vertexColors: true, sizeAttenuation: false, transparent: true, opacity: 0.85 });
+  const mat = new THREE.PointsMaterial({ size: 1.5, vertexColors: true, sizeAttenuation: false, transparent: true, opacity: 0.95 });
   return new THREE.Points(geo, mat);
 }
 
@@ -303,6 +303,24 @@ function buildEarth(renderer) {
 
   group.add(buildLatLongGrid(SCENE_EARTH_RADIUS * 1.004));
   group.add(buildAtmosphere());
+
+  // Earth's rotation axis
+  const axisGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, -SCENE_EARTH_RADIUS * 1.4, 0),
+    new THREE.Vector3(0, SCENE_EARTH_RADIUS * 1.4, 0)
+  ]);
+  const axisMat = new THREE.LineDashedMaterial({
+    color: 0x7ce9da,
+    dashSize: 0.08,
+    gapSize: 0.08,
+    transparent: true,
+    opacity: 0.4,
+    toneMapped: false
+  });
+  const axisLine = new THREE.Line(axisGeo, axisMat);
+  axisLine.computeLineDistances();
+  group.add(axisLine);
+
   return group;
 }
 
@@ -343,8 +361,12 @@ export function initGlobe(canvas) {
 
   scene.add(buildStarfield());
 
+  const tiltGroup = new THREE.Group();
+  tiltGroup.rotation.z = THREE.MathUtils.degToRad(23.5);
+  scene.add(tiltGroup);
+
   const earthGroup = buildEarth(renderer);
-  scene.add(earthGroup);
+  tiltGroup.add(earthGroup);
 
   scene.add(new THREE.AmbientLight(0x1c2836, 1.5));
   const sun = new THREE.DirectionalLight(0xeaf3ff, 1.7);
@@ -554,8 +576,8 @@ export function initGlobe(canvas) {
   }
 
   function disposeCloud() {
-    if (cloudMesh) { scene.remove(cloudMesh); cloudMesh.dispose(); cloudMesh = null; }
-    if (glowMesh) { scene.remove(glowMesh); glowMesh.dispose(); glowMesh = null; }
+    if (cloudMesh) { tiltGroup.remove(cloudMesh); cloudMesh.dispose(); cloudMesh = null; }
+    if (glowMesh) { tiltGroup.remove(glowMesh); glowMesh.dispose(); glowMesh = null; }
   }
 
   function rebuildCloud(objects) {
@@ -580,8 +602,8 @@ export function initGlobe(canvas) {
 
     objects.forEach((o, i) => writeInstance(i, o, 'normal'));
     flushInstances();
-    scene.add(glowMesh);
-    scene.add(cloudMesh);
+    tiltGroup.add(glowMesh);
+    tiltGroup.add(cloudMesh);
   }
 
   function setInstanceHidden(objectId, hidden) {
@@ -615,7 +637,7 @@ export function initGlobe(canvas) {
 
   // ---- focused objects: bright marker + trajectory line, animated by sim time ----
   const focusGroup = new THREE.Group();
-  scene.add(focusGroup);
+  tiltGroup.add(focusGroup);
   const focused = new Map(); // objectId -> { marker, line, trajectory, color, ring }
 
   function makeRingSprite(color) {
@@ -624,13 +646,13 @@ export function initGlobe(canvas) {
     const c = document.createElement('canvas');
     c.width = 128; c.height = 128;
     const ctx = c.getContext('2d');
-    ctx.strokeStyle = color; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.arc(64, 64, 48, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.arc(64, 64, 46, 0, Math.PI * 2); ctx.stroke();
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.16, 0.16, 1);
+    sprite.scale.set(0.22, 0.22, 1);
     return sprite;
   }
 
@@ -653,7 +675,7 @@ export function initGlobe(canvas) {
         varying vec3 vNormal;
         void main() {
           float rim = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.0);
-          gl_FragColor = vec4(mix(color * 0.72, vec3(1.0), rim * 0.55), 1.0);
+          gl_FragColor = vec4(mix(color * 0.95, vec3(1.0), rim * 0.65), 1.0);
         }`,
     });
   }
@@ -662,7 +684,7 @@ export function initGlobe(canvas) {
     if (focused.has(objectId)) return focused.get(objectId);
     setInstanceHidden(objectId, true);
     const obj = objectsById.get(objectId);
-    const markerGeo = new THREE.SphereGeometry(0.042, 32, 32);
+    const markerGeo = new THREE.SphereGeometry(0.055, 32, 32);
     const markerMat = markerMaterial(colorHex);
     const marker = new THREE.Mesh(markerGeo, markerMat);
     marker.userData.objectId = objectId;
@@ -760,14 +782,14 @@ export function initGlobe(canvas) {
     const geo = new THREE.BufferGeometry().setFromPoints(pts);
     const colors = new Float32Array(pts.length * 3);
     const base = new THREE.Color(colorHex);
-    const dim = base.clone().multiplyScalar(0.28);
+    const dim = base.clone().multiplyScalar(0.5);
     for (let i = 0; i < pts.length; i++) {
       const t = i / (pts.length - 1);
-      const c = dim.clone().lerp(base, 1 - t * 0.8);
+      const c = dim.clone().lerp(base, 1 - t * 0.5);
       colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, toneMapped: false });
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1.0, toneMapped: false });
     entry.line = new THREE.Line(geo, mat);
     focusGroup.add(entry.line);
     entry.arrows = buildDirectionArrows(pts, base);
@@ -842,7 +864,7 @@ export function initGlobe(canvas) {
     ctx.strokeStyle = colorHexString(colorHex);
     ctx.lineWidth = 2;
     ctx.stroke();
-    ctx.font = '600 30px "JetBrains Mono", monospace';
+    ctx.font = '500 30px "Roboto Mono", monospace';
     ctx.fillStyle = '#eaf3ff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

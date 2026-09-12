@@ -30,10 +30,16 @@ export function initTopbar({ onNavigate, onDemoInject, onToggleLog }) {
   document.getElementById('demoBtn').addEventListener('click', onDemoInject);
   document.getElementById('logToggle').addEventListener('click', onToggleLog);
 
-  setInterval(() => {
-    document.getElementById('missionClock').innerHTML = `<b>${fmtClock(new Date())}</b> UTC`;
-  }, 1000);
-  document.getElementById('missionClock').innerHTML = `<b>${fmtClock(new Date())}</b> UTC`;
+  const fmtUTCStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const fmtISTStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+  const updateClock = () => {
+    const now = new Date();
+    document.getElementById('missionClock').innerHTML = `<b>${fmtISTStr.format(now)}</b> IST <span style="opacity:0.4; margin:0 4px">|</span> <b>${fmtUTCStr.format(now)}</b> GMT`;
+  };
+
+  setInterval(updateClock, 1000);
+  updateClock();
 
   subscribe((topic) => {
     if (topic === 'serviceStatus') renderServiceChips();

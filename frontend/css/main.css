@@ -7,46 +7,46 @@
    glassmorphism, no purple-everywhere SaaS-template look.
    ========================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Space+Mono:wght@400;700&family=Barlow:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600&family=Inter:wght@400;500;600&family=Roboto+Mono:wght@400;500&display=swap');
 
 :root {
   /* surfaces (light shell) */
-  --void: #e7eaf0;
-  --bg: #eef1f5;
-  --panel: #ffffff;
-  --panel-raised: #f6f7f9;
-  --inset: #eef0f3;
+  --void: #F6F4EF;
+  --bg: #F6F4EF;
+  --panel: #FFFCFC;
+  --panel-raised: #FFFFFF;
+  --inset: #F6F4EF;
 
   /* borders */
-  --hair: rgba(16, 23, 42, 0.08);
-  --hair-strong: rgba(16, 23, 42, 0.16);
-  --hair-accent: rgba(15, 118, 110, 0.4);
+  --hair: #D4D2CB;
+  --hair-strong: rgba(22, 43, 61, 0.15);
+  --hair-accent: rgba(23, 107, 120, 0.4);
 
   /* text */
-  --ink-0: #12161f;
-  --ink-1: #4a5568;
-  --ink-2: #7b8698;
-  --ink-3: #a7b0bd;
+  --ink-0: #162B3D;
+  --ink-1: #41505A;
+  --ink-2: #6D7478;
+  --ink-3: #9CA1A4;
 
   /* accents (categorical / status — deep-on-light, used sparingly) */
-  --cyan: #0f766e;
-  --cyan-bright: #0d9488;
-  --cyan-dim: rgba(15, 118, 110, 0.10);
-  --amber: #b45309;
-  --amber-dim: rgba(180, 83, 9, 0.10);
-  --red: #dc2626;
-  --red-dim: rgba(220, 38, 38, 0.09);
-  --green: #15803d;
-  --green-dim: rgba(21, 128, 61, 0.10);
+  --cyan: #176B78;
+  --cyan-bright: #42B8B3;
+  --cyan-dim: rgba(23, 107, 120, 0.1);
+  --amber: #C47A27;
+  --amber-dim: rgba(196, 122, 39, 0.1);
+  --red: #B84A45;
+  --red-dim: rgba(184, 74, 69, 0.1);
+  --green: #32745B;
+  --green-dim: rgba(50, 116, 91, 0.1);
   --violet: #7c3aed;
   --violet-dim: rgba(124, 58, 237, 0.10);
   --flame: #c2410c;
   --flame-hover: #9a3412;
 
   /* type */
-  --f-display: 'Rajdhani', 'Barlow', system-ui, sans-serif;
-  --f-mono: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --f-body: 'Barlow', system-ui, -apple-system, sans-serif;
+  --f-display: 'Source Serif 4', ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --f-mono: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --f-body: 'Inter', system-ui, -apple-system, sans-serif;
 
   --radius: 5px;
   --radius-md: 8px;
