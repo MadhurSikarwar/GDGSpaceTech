@@ -576,17 +576,15 @@ async function handleInjectOnTarget(targetCatalogId) {
       const dist = newConj.closest_approach?.distance_km != null ? `${newConj.closest_approach.distance_km.toFixed(1)} km` : '';
       toast('CONJUNCTION DETECTED', `${targetName} × ${newConj.secondary_object_name || newConj.secondary_object} (${dist})`, 'crit');
 
-      if (state.explore.active && state.explore.objectId === targetCatalogId) {
-        applyConjunctionToExplore(targetObj, newConj);
-      } else {
-        // Focus the encounter pair and TCA marker on the 3D globe
-        setActiveConjunction(newConj.conjunction_id);
-
-        // If currently in the Pipeline view, walk through the new candidate immediately
-        if (state.view === 'pipeline') {
-          openConjunction(newConj.conjunction_id, true);
-        }
+      if (state.explore.active) {
+        handleExitExplore();
       }
+
+      // Automatically switch to the PIPELINE tab and run/display the pipeline for this conjunction
+      setTimeout(() => {
+        setView('pipeline');
+        openConjunction(newConj.conjunction_id, true);
+      }, 600);
     } else {
       toast('SYNTHETIC DEBRIS INJECTED', 'Check the Conjunctions tab.', 'warn');
     }
