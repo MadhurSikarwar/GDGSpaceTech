@@ -21,7 +21,7 @@ router = APIRouter(prefix=settings.API_PREFIX, tags=["Orbital Intelligence Found
 @router.get("/health", summary="Service Health & Status")
 def get_health(db: Session = Depends(get_db)):
     repo = DatabaseRepository(db)
-    object_count = len(repo.get_all_objects())
+    object_count = repo.get_object_count()
     return {
         "status": "HEALTHY",
         "service": settings.APP_NAME,
@@ -67,10 +67,12 @@ def ingest_data(
 @router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
 def get_objects(
     object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
+    limit: int = Query(default=500, ge=1, le=5000, description="Maximum objects to propagate & return (1-5000)"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
 ):
     repo = DatabaseRepository(db)
-    db_objs = repo.get_all_objects(object_type=object_type)
+    db_objs = repo.get_all_objects(object_type=object_type, limit=limit, offset=offset)
     now_dt = datetime.now(timezone.utc)
 
     results: List[OrbitalObject] = []

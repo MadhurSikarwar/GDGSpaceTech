@@ -84,10 +84,22 @@ class DatabaseRepository:
 
         return db_obj
 
-    def get_all_objects(self, object_type: Optional[str] = None) -> List[ObjectDB]:
+    def get_object_count(self) -> int:
+        return self.db.query(ObjectDB).count()
+
+    def get_all_objects(
+        self,
+        object_type: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None
+    ) -> List[ObjectDB]:
         query = self.db.query(ObjectDB)
         if object_type:
             query = query.filter(ObjectDB.object_type == object_type)
+        if offset is not None and offset > 0:
+            query = query.offset(offset)
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
         return query.all()
 
     def get_object_by_catalog_id(self, catalog_id: str) -> Optional[ObjectDB]:

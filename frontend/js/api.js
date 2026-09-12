@@ -43,8 +43,12 @@ export async function checkHealth(base, timeoutMs = 2500) {
 
 // ---- Tracking + Screening (platform baseline, expected live) ----
 
-export async function getObjects(objectType = null) {
-  const qs = objectType ? `?object_type=${encodeURIComponent(objectType)}` : '';
+export async function getObjects(objectType = null, limit = 500, offset = 0) {
+  const params = new URLSearchParams();
+  if (objectType) params.append('object_type', objectType);
+  if (limit) params.append('limit', limit);
+  if (offset) params.append('offset', offset);
+  const qs = params.toString() ? `?${params.toString()}` : '';
   try {
     return { data: await fetchJSON(`${BASES.tracking}/objects${qs}`, {}, 30000), live: true };
   } catch (err) {
