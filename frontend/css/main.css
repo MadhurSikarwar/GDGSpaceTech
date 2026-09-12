@@ -829,13 +829,21 @@ main {
 
 
 /* ==========================================================================
-   Activity log drawer
+   HUD Bottom-Right Dock & Drawers
    ========================================================================== */
 
-.log-toggle {
-  position: fixed; bottom: 156px; right: 16px; z-index: 40; box-shadow: var(--shadow-sm);
-  display: flex; align-items: center; gap: 7px;
+.hud-dock {
+  position: fixed; bottom: 156px; right: 16px; z-index: 40;
+  display: flex; align-items: center; gap: 8px;
 }
+.glossary-toggle, .log-toggle {
+  box-shadow: var(--shadow-sm);
+  display: flex; align-items: center; gap: 6px;
+  backdrop-filter: blur(8px);
+}
+.glossary-toggle svg, .log-toggle svg { width: 13px; height: 13px; }
+
+/* Activity log drawer */
 .log-drawer {
   position: fixed; right: 16px; bottom: 196px; width: 340px; max-height: 40vh;
   background: rgba(255,255,255,0.98); border: 1px solid var(--hair-strong); border-radius: var(--radius-md);
@@ -856,6 +864,107 @@ main {
 .log-entry.evt-warn .lm { color: var(--amber); }
 .log-entry.evt-crit .lm { color: var(--red); }
 .log-entry.evt-ok .lm { color: var(--green); }
+
+/* Glossary drawer */
+.glossary-drawer {
+  position: fixed; right: 16px; bottom: 196px; width: 420px; max-width: calc(100vw - 32px);
+  height: 520px; max-height: 60vh;
+  background: rgba(255,255,255,0.98); border: 1px solid var(--hair-strong); border-radius: var(--radius-md);
+  backdrop-filter: blur(12px); z-index: 45; display: flex; flex-direction: column;
+  transform: translateY(12px) scale(0.98); opacity: 0; pointer-events: none;
+  transition: all 0.18s var(--ease); box-shadow: var(--shadow-md); overflow: hidden;
+}
+.glossary-drawer.open { transform: translateY(0) scale(1); opacity: 1; pointer-events: auto; }
+
+.glossary-head {
+  padding: 11px 14px; border-bottom: 1px solid var(--hair);
+  display: flex; justify-content: space-between; align-items: center; background: var(--panel);
+}
+.glossary-head .gh-title {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.08em;
+  color: var(--ink-1); font-weight: 600; display: flex; align-items: center; gap: 7px;
+}
+.glossary-head .gh-title svg { width: 14px; height: 14px; color: var(--cyan); }
+.glossary-close {
+  background: none; border: none; color: var(--ink-2); cursor: pointer;
+  padding: 2px 6px; font-size: 12px; border-radius: 4px; transition: all 0.15s;
+}
+.glossary-close:hover { color: var(--ink-0); background: var(--hair); }
+
+.glossary-search-wrap { padding: 10px 14px 6px; }
+.glossary-search {
+  width: 100%; box-sizing: border-box; font-size: 11.5px; padding: 7px 10px;
+}
+
+.glossary-cats {
+  display: flex; gap: 6px; padding: 4px 14px 10px; overflow-x: auto;
+  scrollbar-width: none; border-bottom: 1px solid var(--hair);
+}
+.glossary-cats::-webkit-scrollbar { display: none; }
+.g-cat {
+  background: var(--inset); border: 1px solid var(--hair-strong);
+  border-radius: 12px; padding: 3px 9px; font-family: var(--f-mono);
+  font-size: 8.5px; letter-spacing: 0.04em; color: var(--ink-2);
+  cursor: pointer; white-space: nowrap; transition: all 0.15s;
+}
+.g-cat:hover { color: var(--ink-0); border-color: var(--hair-accent); }
+.g-cat.active {
+  background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan);
+  font-weight: 600;
+}
+
+.glossary-list {
+  flex: 1; overflow-y: auto; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.glossary-card {
+  background: var(--panel); border: 1px solid var(--hair);
+  border-radius: var(--radius); padding: 10px 12px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.glossary-card:hover { border-color: var(--hair-accent); background: var(--panel-raised); }
+
+.gc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.gc-title-wrap { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.gc-term { font-family: var(--f-display); font-weight: 700; font-size: 13px; color: var(--ink-0); }
+.gc-fullname { font-family: var(--f-body); font-size: 10.5px; color: var(--ink-2); }
+
+.gc-badge {
+  font-family: var(--f-mono); font-size: 8px; letter-spacing: 0.04em;
+  padding: 2px 6px; border-radius: 3px; text-transform: uppercase; white-space: nowrap;
+}
+.gc-badge.cat-collision { background: var(--red-dim); color: var(--red); }
+.gc-badge.cat-orbits { background: var(--cyan-dim); color: var(--cyan); }
+.gc-badge.cat-maneuvers { background: var(--amber-dim); color: var(--amber); }
+.gc-badge.cat-weather { background: var(--amber-dim); color: var(--amber); }
+.gc-badge.cat-ground { background: var(--green-dim); color: var(--green); }
+
+.gc-desc { font-size: 11px; color: var(--ink-1); line-height: 1.45; margin-bottom: 4px; }
+.gc-detail {
+  font-family: var(--f-mono); font-size: 9px; color: var(--ink-2);
+  line-height: 1.4; background: var(--inset); padding: 4px 8px;
+  border-radius: 4px; border-left: 2px solid var(--hair-accent);
+}
+
+.glossary-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 40px 14px; gap: 8px;
+  color: var(--ink-2); font-size: 11px; text-align: center;
+}
+.glossary-empty svg { width: 24px; height: 24px; color: var(--ink-3); }
+
+/* Interactive telemetry term link */
+.glossary-link {
+  cursor: pointer;
+  text-decoration: underline dotted var(--hair-accent);
+  text-underline-offset: 3px;
+  transition: color 0.15s var(--ease), text-decoration-color 0.15s var(--ease);
+}
+.glossary-link:hover {
+  color: var(--cyan);
+  text-decoration-color: var(--cyan);
+}
+
 
 /* ==========================================================================
    Toasts

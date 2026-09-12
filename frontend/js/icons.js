@@ -35,4 +35,5 @@ export const icons = {
   fly: wrap(`<path d="M12 3.5v17M4.5 12h15"/><circle cx="12" cy="12" r="7.5"/>`),
   reset: wrap(`<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>`),
   flag: wrap(`<path d="M6 21V4"/><path d="M6 4.5h12l-3 3.75 3 3.75H6"/>`),
+  book: wrap(`<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>`),
 };

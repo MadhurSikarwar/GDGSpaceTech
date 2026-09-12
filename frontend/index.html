@@ -208,7 +208,30 @@
   </main>
 </div>
 
-<button class="btn btn-ghost btn-sm log-toggle" id="logToggle"><span id="logToggleIcon"></span> LOG</button>
+<div class="hud-dock">
+  <button class="btn btn-ghost btn-sm glossary-toggle" id="glossaryToggle"><span id="glossaryToggleIcon"></span> GLOSSARY</button>
+  <button class="btn btn-ghost btn-sm log-toggle" id="logToggle"><span id="logToggleIcon"></span> LOG</button>
+</div>
+
+<div class="glossary-drawer" id="glossaryDrawer">
+  <div class="glossary-head">
+    <div class="gh-title"><span id="glossaryHeadIcon"></span> SPACE DOMAIN GLOSSARY</div>
+    <button class="glossary-close" id="glossaryClose" title="Close glossary (Esc)">✕</button>
+  </div>
+  <div class="glossary-search-wrap">
+    <input type="text" class="search-input glossary-search" id="glossarySearch" placeholder="Search acronyms, physics & terminology…" />
+  </div>
+  <div class="glossary-cats" id="glossaryCats">
+    <button class="g-cat active" data-cat="ALL">ALL</button>
+    <button class="g-cat" data-cat="COLLISION">COLLISION</button>
+    <button class="g-cat" data-cat="ORBITS">ORBITS</button>
+    <button class="g-cat" data-cat="MANEUVERS">MANEUVERS</button>
+    <button class="g-cat" data-cat="WEATHER">WEATHER</button>
+    <button class="g-cat" data-cat="GROUND">GROUND</button>
+  </div>
+  <div class="glossary-list" id="glossaryList"></div>
+</div>
+
 <div class="log-drawer" id="logDrawer">
   <div class="log-drawer-head"><span>ACTIVITY LOG</span><span id="logCount">0 EVENTS</span></div>
   <div class="log-list" id="logList"></div>
@@ -216,6 +239,6 @@
 
 <div class="toast-stack" id="toastStack"></div>
 
-<script type="module" src="./js/main.js"></script>
+<script type="module" src="./js/main.js?v=1.2"></script>
 </body>
 </html>

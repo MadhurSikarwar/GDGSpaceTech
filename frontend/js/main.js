@@ -8,6 +8,7 @@ import { initTopbar, initLogDrawer, toast } from './panels/topbar.js';
 import { initCatalog } from './panels/catalog.js';
 import { initConjunctions } from './panels/conjunctions.js';
 import { initPipeline, openConjunction } from './panels/pipeline.js';
+import { initGlossary } from './panels/glossary.js';
 import { icons } from './icons.js';
 import { fmtKm, fmtNum, clamp, fmtCountdown, escapeHtml, fmtRelVel } from './utils.js';
 
@@ -71,10 +72,28 @@ async function main() {
   });
 
   const logDrawer = initLogDrawer();
+  const glossaryDrawer = initGlossary({
+    onToggleOtherDrawer: () => {
+      const el = document.getElementById('logDrawer');
+      if (el) el.classList.remove('open');
+    }
+  });
+
   initTopbar({
     onNavigate: (view) => setView(view),
     onDemoInject: handleDemoInject,
-    onToggleLog: () => logDrawer.toggle(),
+    onToggleLog: () => {
+      glossaryDrawer.close();
+      logDrawer.toggle();
+    },
+  });
+
+  document.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-glossary]');
+    if (target) {
+      e.stopPropagation();
+      glossaryDrawer.search(target.dataset.glossary);
+    }
   });
   initCatalog({ onSelectObject: handleSelectObject, onSyncCatalog: handleSyncCatalog });
   initConjunctions({ onOpenConjunction: handleOpenConjunction, onRunScreen: handleRunScreen });

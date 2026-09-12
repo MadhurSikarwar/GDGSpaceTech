@@ -334,10 +334,10 @@ function conjunctionCard(conj) {
       <div class="kv-field"><label>Secondary</label><div class="v">${escapeHtml(cleanLabel(conj.secondary_object_name || conj.secondary_object))}</div></div>
       <div class="kv-field"><label>Distance @ TCA</label><div class="v accent">${fmtKm(conj.closest_approach.distance_km)}</div></div>
       <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(conj.closest_approach.relative_velocity_km_s)}</div></div>
-      <div class="kv-field"><label>Time to TCA</label><div class="v">${mins > 0 ? mins.toFixed(1) + ' min' : 'past'}</div></div>
-      <div class="kv-field"><label>Pc</label><div class="v ${hasPc ? 'accent' : ''}">${hasPc ? fmtPc(conj.probability_of_collision) : 'unavailable'}</div></div>
+      <div class="kv-field"><label class="glossary-link" data-glossary="TCA" title="View TCA in Space Domain Glossary">Time to TCA</label><div class="v">${mins > 0 ? mins.toFixed(1) + ' min' : 'past'}</div></div>
+      <div class="kv-field"><label class="glossary-link" data-glossary="Pc" title="View Pc in Space Domain Glossary">Pc</label><div class="v ${hasPc ? 'accent' : ''}">${hasPc ? fmtPc(conj.probability_of_collision) : 'unavailable'}</div></div>
     </div>
-    ${hasPc ? `<div class="notes-line mono" style="font-size:9.5px">${escapeHtml(pcMethod)} · Combined HBR ${fmtNum(conj.combined_hard_body_radius_m, 0)} m</div>` : ''}
+    ${hasPc ? `<div class="notes-line mono" style="font-size:9.5px"><span class="glossary-link" data-glossary="Foster 2D Method" title="View Foster 2D Method in Glossary">${escapeHtml(pcMethod)}</span> · Combined <span class="glossary-link" data-glossary="HBR" title="View HBR in Glossary">HBR</span> ${fmtNum(conj.combined_hard_body_radius_m, 0)} m</div>` : ''}
   </div>`;
 }
 
@@ -374,10 +374,10 @@ function riskCard(entry) {
       </div>
       <div class="kv-grid" style="flex:1">
         <div class="kv-field"><label>Closest Approach</label><div class="v">${fmtKm(r.factors.closest_approach_km)}</div></div>
-        <div class="kv-field"><label>Time to TCA</label><div class="v">${fmtNum(r.factors.time_to_tca_minutes, 1)} min</div></div>
+        <div class="kv-field"><label class="glossary-link" data-glossary="TCA" title="View TCA in Space Domain Glossary">Time to TCA</label><div class="v">${fmtNum(r.factors.time_to_tca_minutes, 1)} min</div></div>
         <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(r.factors.relative_velocity_km_s)}</div></div>
-        <div class="kv-field"><label>Pc</label><div class="v" style="${hasPc ? `color:${colorVar}` : ''}">${hasPc ? fmtPc(r.collision_probability) : 'unavailable'}</div></div>
-        <div class="kv-field"><label>Uncertainty Model</label><div class="v mono method-val" title="${escapeHtml(cleanLabel(r.uncertainty?.model))}">${escapeHtml(modelName)}</div></div>
+        <div class="kv-field"><label class="glossary-link" data-glossary="Pc" title="View Pc in Space Domain Glossary">Pc</label><div class="v" style="${hasPc ? `color:${colorVar}` : ''}">${hasPc ? fmtPc(r.collision_probability) : 'unavailable'}</div></div>
+        <div class="kv-field"><label class="glossary-link" data-glossary="Covariance Realism" title="View Covariance Realism in Space Domain Glossary">Uncertainty Model</label><div class="v mono method-val" title="${escapeHtml(cleanLabel(r.uncertainty?.model))}">${escapeHtml(modelName)}</div></div>
         <div class="kv-field"><label>Confidence</label><div class="v">${escapeHtml(confidence)}</div></div>
       </div>
     </div>
