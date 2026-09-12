@@ -12,10 +12,14 @@ from services.propagation.app.propagation.trajectory import generate_trajectory
 from services.propagation.app.screening.conjunction import ScreeningPipeline
 from services.propagation.app.screening.fine_filter import FineFilter
 from services.propagation.app.synthetic.generator import generate_verified_synthetic_debris
+from services.propagation.app.spaceweather.noaa_client import get_space_weather
+from services.propagation.app.physics.ground_stations import GROUND_STATIONS, compute_passes_for_object
 from shared.schemas.object import OrbitalObject, ObjectType, OrbitalData, DataQuality, PropagationInfo
 from shared.schemas.trajectory import Trajectory
 from shared.schemas.conjunction import ConjunctionCandidate
 from shared.schemas.state import StateVector
+from shared.schemas.space_weather import SpaceWeatherSnapshot
+from shared.schemas.ground_station import GroundStation, GroundStationPasses
 
 router = APIRouter(prefix=settings.API_PREFIX, tags=["Orbital Intelligence Foundation"])
 
@@ -33,6 +37,11 @@ def get_health(db: Session = Depends(get_db)):
         "tracked_objects_count": object_count,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+@router.get("/space-weather", response_model=SpaceWeatherSnapshot, summary="Live NOAA Space Weather (F10.7 / Kp)")
+def get_space_weather_snapshot():
+    return get_space_weather()
 
 
 @router.post("/ingest", summary="Ingest Orbital Data from CelesTrak or Cache")
@@ -221,6 +230,47 @@ def get_object_trajectory(
     return traj
 
 
+@router.get("/ground-stations", response_model=List[GroundStation], summary="List Configured Ground Stations")
+def get_ground_stations():
+    return GROUND_STATIONS
+
+
+@router.get(
+    "/objects/{object_id}/ground-station-passes",
+    response_model=GroundStationPasses,
+    summary="Compute AOS/LOS Ground-Station Visibility Windows"
+)
+def get_object_ground_station_passes(
+    object_id: str,
+    horizon: int = Query(default=90, ge=1, le=1440, description="Propagation horizon in minutes"),
+    db: Session = Depends(get_db)
+):
+    # A separate endpoint rather than embedding this into GET /trajectory:
+    # trajectory is a hot, cached, frequently-called path hit on every object
+    # selection, and most of those selections never have ground-station
+    # visualization toggled on -- there's no reason to tax that path with
+    # 3-station Skyfield visibility computation it usually won't use.
+    repo = DatabaseRepository(db)
+    o = repo.get_object_by_catalog_id(object_id)
+    if not o:
+        objs = repo.get_all_objects()
+        o = next((item for item in objs if item.object_id == object_id), None)
+    if not o:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Object '{object_id}' not found.")
+
+    now_dt = datetime.now(timezone.utc)
+    passes = compute_passes_for_object(
+        o.raw_tle_line1, o.raw_tle_line2, o.name,
+        start_dt=now_dt, horizon_minutes=horizon
+    )
+    return GroundStationPasses(
+        catalog_id=o.catalog_id,
+        generated_at=now_dt,
+        horizon_minutes=horizon,
+        passes=passes
+    )
+
+
 @router.post("/screen", response_model=List[ConjunctionCandidate], summary="Run 2-Stage Screening Pipeline")
 def run_screening_pipeline(
     horizon: int = Query(default=90, description="Screening horizon in minutes"),
@@ -242,10 +292,12 @@ def run_screening_pipeline(
             "object_type": o.object_type,
             "tle_line_1": o.raw_tle_line1,
             "tle_line_2": o.raw_tle_line2,
-            "source": o.source
+            "source": o.source,
+            "epoch": o.epoch
         })
 
-    pipeline = ScreeningPipeline(threshold_km=threshold_km)
+    space_weather = get_space_weather()
+    pipeline = ScreeningPipeline(threshold_km=threshold_km, drag_activity_scalar=space_weather.drag_activity_scalar)
     candidates = pipeline.run_screening(objects_data, horizon_minutes=horizon)
 
     # Save flagged conjunction candidates to DB
@@ -284,7 +336,8 @@ def inject_synthetic_demo(
         "catalog_id": target.catalog_id,
         "name": target.name,
         "tle_line_1": target.raw_tle_line1,
-        "tle_line_2": target.raw_tle_line2
+        "tle_line_2": target.raw_tle_line2,
+        "epoch": target.epoch
     }
 
     synth_item = generate_verified_synthetic_debris(
@@ -333,6 +386,7 @@ def inject_synthetic_demo(
             "tle_line_1": target.raw_tle_line1,
             "tle_line_2": target.raw_tle_line2,
             "source": target.source,
+            "epoch": target.epoch,
         },
         {
             "catalog_id": synth_db.catalog_id,
@@ -341,9 +395,11 @@ def inject_synthetic_demo(
             "tle_line_1": synth_db.raw_tle_line1,
             "tle_line_2": synth_db.raw_tle_line2,
             "source": synth_db.source,
+            "epoch": synth_db.epoch,
         },
     ]
-    pipeline = ScreeningPipeline(threshold_km=50.0)
+    space_weather = get_space_weather()
+    pipeline = ScreeningPipeline(threshold_km=50.0, drag_activity_scalar=space_weather.drag_activity_scalar)
     conjunctions = pipeline.run_screening(pair_data, horizon_minutes=90)
 
     for c in conjunctions:

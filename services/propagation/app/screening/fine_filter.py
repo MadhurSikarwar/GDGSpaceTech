@@ -1,3 +1,4 @@
+import logging
 import math
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -6,12 +7,29 @@ from skyfield.api import load
 
 from services.propagation.app.config import settings
 from services.propagation.app.propagation.sgp4_engine import SGP4PropagationEngine, ts
+from services.propagation.app.physics import covariance as covariance_physics
+from services.propagation.app.physics import probability_of_collision as pc_physics
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
+from shared.schemas.state import Vector3
+
+logger = logging.getLogger(__name__)
 
 
 class FineFilter:
-    def __init__(self, threshold_km: Optional[float] = None):
+    def __init__(
+        self,
+        threshold_km: Optional[float] = None,
+        combined_hbr_km: Optional[float] = None,
+        drag_activity_scalar: float = 1.0,
+    ):
         self.threshold_km = threshold_km or settings.SCREENING_THRESHOLD_KM
+        # Combined (primary + secondary) hard-body radius for the Pc disk
+        # integral, and the live NOAA-derived drag-activity multiplier applied
+        # to along-track covariance growth (see physics/covariance.py). Both
+        # default to quiet-baseline settings so Pc is still computed even when
+        # the caller doesn't have a live space-weather reading on hand.
+        self.combined_hbr_km = combined_hbr_km or (settings.COMBINED_HARD_BODY_RADIUS_M / 1000.0)
+        self.drag_activity_scalar = drag_activity_scalar
 
     def compute_conjunction_candidate(
         self,
@@ -88,6 +106,27 @@ class FineFilter:
         # Check against configured screening threshold
         if min_dist_km <= self.threshold_km:
             conj_id = f"CONJ-{primary['catalog_id']}-{secondary['catalog_id']}-{min_tca_dt.strftime('%Y%m%d%H%M')}"
+
+            # Relative position/velocity VECTORS at the refined TCA sample --
+            # not just their magnitudes -- are the required input for Foster's
+            # encounter-plane Pc projection below. Preserve them on the
+            # returned candidate too (Optional fields) so any future consumer
+            # has them without a second propagation.
+            rel_pos_vec = (float(dxr[min_r_idx]), float(dyr[min_r_idx]), float(dzr[min_r_idx]))
+            rel_vel_vec = (dvx, dvy, dvz)
+
+            probability_of_collision, pc_method, combined_hbr_m = self._try_compute_pc(
+                primary=primary,
+                secondary=secondary,
+                tca_dt=min_tca_dt,
+                primary_pos_km=pos_pr[:, min_r_idx],
+                primary_vel_km_s=vel_pr[:, min_r_idx],
+                secondary_pos_km=pos_sr[:, min_r_idx],
+                secondary_vel_km_s=vel_sr[:, min_r_idx],
+                rel_pos_vec=rel_pos_vec,
+                rel_vel_vec=rel_vel_vec,
+            )
+
             return ConjunctionCandidate(
                 conjunction_id=conj_id,
                 primary_object=primary["catalog_id"],
@@ -97,7 +136,9 @@ class FineFilter:
                 tca=min_tca_dt,
                 closest_approach=ClosestApproach(
                     distance_km=round(min_dist_km, 3),
-                    relative_velocity_km_s=round(min_rel_vel_kms, 3)
+                    relative_velocity_km_s=round(min_rel_vel_kms, 3),
+                    relative_position_km=Vector3(x=rel_pos_vec[0], y=rel_pos_vec[1], z=rel_pos_vec[2]),
+                    relative_velocity_vector_km_s=Vector3(x=rel_vel_vec[0], y=rel_vel_vec[1], z=rel_vel_vec[2]),
                 ),
                 screening=ScreeningInfo(
                     threshold_km=self.threshold_km,
@@ -107,7 +148,70 @@ class FineFilter:
                     primary_source=primary.get("source", "CelesTrak"),
                     propagator="SGP4"
                 ),
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
+                probability_of_collision=probability_of_collision,
+                pc_method=pc_method,
+                combined_hard_body_radius_m=combined_hbr_m,
             )
 
         return None
+
+    def _try_compute_pc(
+        self,
+        primary: Dict[str, Any],
+        secondary: Dict[str, Any],
+        tca_dt: datetime,
+        primary_pos_km: np.ndarray,
+        primary_vel_km_s: np.ndarray,
+        secondary_pos_km: np.ndarray,
+        secondary_vel_km_s: np.ndarray,
+        rel_pos_vec: tuple,
+        rel_vel_vec: tuple,
+    ):
+        """
+        Best-effort Pc computation: needs each object's TLE epoch (to derive
+        data age at TCA) which older callers may not supply. Missing epoch or
+        any numerical edge case (e.g. a near-zero relative velocity, which
+        would leave the encounter plane undefined) degrades to (None, None,
+        None) rather than failing the whole screening pass -- a conjunction
+        candidate is still meaningful by miss-distance alone even without Pc.
+        """
+        primary_epoch = primary.get("epoch")
+        secondary_epoch = secondary.get("epoch")
+        if primary_epoch is None or secondary_epoch is None:
+            return None, None, None
+
+        try:
+            if tca_dt.tzinfo is None:
+                tca_dt = tca_dt.replace(tzinfo=timezone.utc)
+            if primary_epoch.tzinfo is None:
+                primary_epoch = primary_epoch.replace(tzinfo=timezone.utc)
+            if secondary_epoch.tzinfo is None:
+                secondary_epoch = secondary_epoch.replace(tzinfo=timezone.utc)
+
+            primary_age_hours = abs((tca_dt - primary_epoch).total_seconds()) / 3600.0
+            secondary_age_hours = abs((tca_dt - secondary_epoch).total_seconds()) / 3600.0
+
+            combined_cov = covariance_physics.combined_covariance_teme_km2(
+                primary_position_km=primary_pos_km,
+                primary_velocity_km_s=primary_vel_km_s,
+                primary_age_hours=primary_age_hours,
+                primary_type=primary.get("object_type", "SATELLITE"),
+                secondary_position_km=secondary_pos_km,
+                secondary_velocity_km_s=secondary_vel_km_s,
+                secondary_age_hours=secondary_age_hours,
+                secondary_type=secondary.get("object_type", "DEBRIS"),
+                drag_activity_scalar=self.drag_activity_scalar,
+            )
+            pc, _abserr = pc_physics.compute_pc(
+                relative_position_km=rel_pos_vec,
+                relative_velocity_km_s=rel_vel_vec,
+                combined_covariance_teme_km2=combined_cov,
+                combined_hbr_km=self.combined_hbr_km,
+            )
+            return pc, pc_physics.PC_METHOD, self.combined_hbr_km * 1000.0
+        except Exception as exc:
+            logger.warning(
+                f"Pc computation skipped for {primary.get('catalog_id')}x{secondary.get('catalog_id')}: {exc}"
+            )
+            return None, None, None

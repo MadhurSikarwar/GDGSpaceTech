@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { stationTemeKm, stationZenithTeme } from './groundstations.js';
 
 // Scene scale: TEME kilometers -> scene units. Earth radius maps to 2.0 units.
 const EARTH_RADIUS_KM = 6378.137;
@@ -366,6 +367,43 @@ function buildAtmosphere() {
     depthTest: true,
   });
   return new THREE.Mesh(geo, mat);
+}
+
+// ---- ground station sensor-coverage cones ----
+// Apex at the station (narrow point), opening toward zenith at
+// (90 - min_elevation_deg) half-angle from the axis. The 10-degree mask
+// used by every configured station produces a genuinely wide, shallow dome
+// (half-angle 80 deg) rather than a narrow searchlight beam -- that's
+// physically correct for a low-elevation ground-station footprint, not a
+// rendering bug; a low, restrained opacity plus additive blending keeps
+// three overlapping domes legible instead of a solid wall of color.
+const STATION_CONE_HEIGHT_KM = 2200; // comfortably past typical LEO altitudes
+const STATION_COLOR = 0xD98324; // amber -- distinct from every object-type legend color
+
+function buildStationCone(minElevationDeg) {
+  const halfAngleRad = THREE.MathUtils.degToRad(90 - minElevationDeg);
+  const heightScene = STATION_CONE_HEIGHT_KM * KM_TO_SCENE;
+  const radiusScene = heightScene * Math.tan(halfAngleRad);
+  const geo = new THREE.ConeGeometry(radiusScene, heightScene, 48, 1, true);
+  // Default ConeGeometry centers itself with the apex at local +Y/2 and the
+  // base at local -Y/2. Shift so the apex sits at the local origin -- the
+  // cone's "opening direction" from there is local -Y -- so it can be
+  // dropped exactly at the station's scene position and then oriented
+  // toward true zenith with a single quaternion.
+  geo.translate(0, -heightScene / 2, 0);
+  const mat = new THREE.MeshBasicMaterial({
+    color: STATION_COLOR,
+    transparent: true,
+    opacity: 0.07,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 1;
+  mesh.raycast = () => {}; // decorative only, never steals a click from the object cloud
+  return mesh;
 }
 
 const dummy = new THREE.Object3D();
@@ -967,6 +1005,66 @@ export function initGlobe(canvas) {
     updateRuler(); // this may be the entry the ruler was waiting on
   }
 
+  // ---- ground station cones: fixed to Earth's true rotation, not the
+  // cosmetic earthGroup spin -- see buildStationCone() and groundstations.js
+  // for why. Parented to tiltGroup (the inertial frame satellites live in),
+  // repositioned every time simMinutes changes via a real GMST computation
+  // anchored to `simEpochMs` (wall-clock time this globe was initialized).
+  const groundStationGroup = new THREE.Group();
+  tiltGroup.add(groundStationGroup);
+  const stationEntries = new Map(); // station_id -> { mesh, dot, config, active }
+  const simEpochMs = Date.now();
+
+  function setGroundStations(stations) {
+    for (const [, entry] of stationEntries) {
+      groundStationGroup.remove(entry.mesh);
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+      groundStationGroup.remove(entry.dot);
+      entry.dot.geometry.dispose();
+      entry.dot.material.dispose();
+    }
+    stationEntries.clear();
+
+    for (const station of stations) {
+      const mesh = buildStationCone(station.min_elevation_deg);
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.012, 12, 12),
+        new THREE.MeshBasicMaterial({ color: STATION_COLOR, toneMapped: false })
+      );
+      dot.raycast = () => {};
+      groundStationGroup.add(mesh);
+      groundStationGroup.add(dot);
+      stationEntries.set(station.station_id, { mesh, dot, config: station, active: false });
+    }
+    repositionGroundStations();
+  }
+
+  function repositionGroundStations() {
+    if (!stationEntries.size) return;
+    const date = new Date(simEpochMs + simMinutes * 60000);
+    for (const [, entry] of stationEntries) {
+      const scenePos = kmToScene(stationTemeKm(entry.config, date));
+      const zenithScene = kmToScene(stationZenithTeme(entry.config, date)).normalize();
+      entry.mesh.position.copy(scenePos);
+      entry.dot.position.copy(scenePos);
+      entry.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), zenithScene);
+    }
+  }
+
+  function setStationActive(stationId, active) {
+    const entry = stationEntries.get(stationId);
+    if (!entry || entry.active === active) return;
+    entry.active = active;
+    entry.mesh.material.opacity = active ? 0.30 : 0.07;
+    entry.dot.material.color.setHex(active ? 0xfff3d6 : STATION_COLOR);
+    entry.dot.scale.setScalar(active ? 1.8 : 1.0);
+  }
+
+  function clearStationActive() {
+    for (const stationId of stationEntries.keys()) setStationActive(stationId, false);
+  }
+
   let simMinutes = 0;
 
   function positionEntry(entry) {
@@ -1257,7 +1355,7 @@ export function initGlobe(canvas) {
     focusTrajectory(objectId, trajectoryPoints, colorHex) { setFocusTrajectory(objectId, trajectoryPoints, colorHex); },
     unfocus(objectId) { unfocusObject(objectId); },
     unfocusAll() { for (const id of [...focused.keys()]) unfocusObject(id); },
-    setSimMinutes(m) { simMinutes = m; applySimMinutes(); },
+    setSimMinutes(m) { simMinutes = m; applySimMinutes(); repositionGroundStations(); },
     showConjunctionAt(km) { showConjunctionMarker(kmToScene(km)); },
     clearConjunctionMarker,
     onSelect(cb) { selectCb = cb; },
@@ -1302,5 +1400,11 @@ export function initGlobe(canvas) {
     clearDistanceRuler() { clearDistanceRuler(); },
     pulseArrival(objectId, duration) { pulseArrival(objectId, duration); },
     flashBurn(objectId) { flashBurn(objectId); },
+
+    // ---- ground station coverage cones ----
+    setGroundStations(stations) { setGroundStations(stations); },
+    setGroundStationsVisible(visible) { groundStationGroup.visible = visible; },
+    setStationActive(stationId, active) { setStationActive(stationId, active); },
+    clearStationActive() { clearStationActive(); },
   };
 }

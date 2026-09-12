@@ -42,11 +42,19 @@ _injection_counter = 0
 def generate_verified_synthetic_debris(
     target_satellite: Dict[str, Any],
     tca_offset_minutes: Optional[float] = None,
-    profile_index: Optional[int] = None
+    profile_index: Optional[int] = None,
+    reference_time: Optional[datetime] = None
 ) -> Dict[str, Any]:
     """
     Constructs a unique verified synthetic debris object (SYNTHETIC_DEBRIS) targeting target_satellite.
     Derives genuine orbital encounter parameters via SGP4 propagation.
+
+    reference_time overrides "now" as the anchor for computing the intended
+    TCA -- defaults to the real current time for every production call site,
+    but lets tests fix a reproducible reference time instead of one that
+    silently drifts further from a hardcoded TLE's epoch (and so, along with
+    it, the realized encounter geometry) with every day that passes after
+    the test was written.
     """
     global _injection_counter
     _injection_counter += 1
@@ -69,7 +77,7 @@ def generate_verified_synthetic_debris(
     eff_tca_min = tca_offset_minutes if tca_offset_minutes is not None else default_tca_min
 
     engine = SGP4PropagationEngine(line1, line2, raw_name)
-    now_dt = datetime.now(timezone.utc)
+    now_dt = reference_time if reference_time is not None else datetime.now(timezone.utc)
     tca_dt = now_dt + timedelta(minutes=eff_tca_min)
 
     # State of target satellite at TCA in TEME

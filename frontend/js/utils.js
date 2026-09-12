@@ -9,6 +9,13 @@ export function fmtKm(v, digits = 1) {
   return `${fmtNum(v, digits)} km`;
 }
 
+export function fmtPc(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const num = Number(v);
+  if (num === 0) return '0';
+  return num.toExponential(2);
+}
+
 export function fmtRelVel(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
   const num = Number(v);
@@ -97,11 +104,17 @@ export function riskTierColorVar(tier) {
   }
 }
 
-let seedState = 42;
-export function seededRandom() {
-  seedState = (seedState * 1664525 + 1013904223) >>> 0;
-  return seedState / 4294967296;
+export function cleanLabel(str) {
+  if (str === null || str === undefined) return '—';
+  return String(str).replace(/_/g, ' ');
 }
-export function seedRandom(seed) {
-  seedState = seed >>> 0;
+
+export function cleanMethodName(str) {
+  if (!str) return '—';
+  const s = String(str).trim();
+  const upper = s.toUpperCase();
+  if (upper === 'FOSTER_2D_TLE_AGE_COVARIANCE') return 'Foster 2D (TLE Age)';
+  if (upper === 'SGP4_TRAJECTORY_SCREENING') return 'SGP4 Trajectory Screening';
+  if (upper === 'SGP4_PROPAGATION') return 'SGP4 Propagation';
+  return s.replace(/_/g, ' ');
 }

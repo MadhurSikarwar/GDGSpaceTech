@@ -83,15 +83,38 @@ def calculate_risk_score(
     return round(max(0.0, min(100.0, raw_score)), 1)
 
 
+# Pc-based classification ladder. 1e-4 is the industry-conventional maneuver
+# decision threshold (also the user-specified "critical safety threshold" for
+# the Phase 2 delta-V optimizer); the two tiers below it are conventional
+# monitoring/awareness steps rather than derived from any specific dataset.
+PC_TIER_CRITICAL = 1.0e-4
+PC_TIER_HIGH = 1.0e-5
+PC_TIER_MEDIUM = 1.0e-6
+
+
 def classify_risk_level(
     risk_score: float,
     distance_km: float,
-    time_to_tca_minutes: float
+    time_to_tca_minutes: float,
+    probability_of_collision: Optional[float] = None
 ) -> str:
     """
-    Assign explainable, deterministic risk tier:
-    CRITICAL, HIGH, MEDIUM, or LOW.
+    Assign explainable, deterministic risk tier: CRITICAL, HIGH, MEDIUM, LOW.
+
+    When a Pc value is available it is the PRIMARY driver (Pc is the whole
+    point of replacing miss-distance-only alerting) -- the distance/time/
+    velocity heuristic below is the fallback for candidates where Pc could
+    not be computed (e.g. missing TLE epoch), not a second vote alongside it.
     """
+    if probability_of_collision is not None:
+        if probability_of_collision >= PC_TIER_CRITICAL:
+            return "CRITICAL"
+        if probability_of_collision >= PC_TIER_HIGH:
+            return "HIGH"
+        if probability_of_collision >= PC_TIER_MEDIUM:
+            return "MEDIUM"
+        return "LOW"
+
     if risk_score >= 85.0 or (distance_km < 5.0 and time_to_tca_minutes <= 30.0):
         return "CRITICAL"
     if risk_score >= 70.0 or distance_km < 12.0:
@@ -106,27 +129,29 @@ def generate_risk_notes(
     distance_km: float,
     time_to_tca_minutes: float,
     relative_velocity_km_s: float,
-    risk_level: str
+    risk_level: str,
+    probability_of_collision: Optional[float] = None
 ) -> str:
     """Generate concise, operator-friendly diagnostic notes for the assessment."""
+    pc_clause = f" Pc = {probability_of_collision:.2e}." if probability_of_collision is not None else ""
     if risk_level == "CRITICAL":
         return (
             f"CRITICAL encounter hazard ({distance_km:.2f} km separation in {time_to_tca_minutes:.1f} mins) "
-            f"at {relative_velocity_km_s:.2f} km/s. Immediate avoidance maneuver assessment required."
+            f"at {relative_velocity_km_s:.2f} km/s.{pc_clause} Immediate avoidance maneuver assessment required."
         )
     elif risk_level == "HIGH":
         return (
             f"High conjunction risk: Miss distance of {distance_km:.2f} km with {time_to_tca_minutes:.1f} mins to TCA. "
-            f"Relative velocity {relative_velocity_km_s:.2f} km/s."
+            f"Relative velocity {relative_velocity_km_s:.2f} km/s.{pc_clause}"
         )
     elif risk_level == "MEDIUM":
         return (
-            f"Moderate hazard level: Candidate within screening boundary ({distance_km:.2f} km). "
+            f"Moderate hazard level: Candidate within screening boundary ({distance_km:.2f} km).{pc_clause} "
             f"Continued orbital monitoring recommended."
         )
     else:
         return (
-            f"Low conjunction risk: Safe clearance of {distance_km:.2f} km maintained over evaluation horizon."
+            f"Low conjunction risk: Safe clearance of {distance_km:.2f} km maintained over evaluation horizon.{pc_clause}"
         )
 
 
@@ -140,17 +165,19 @@ def assess_conjunction_risk(
     dist_km = candidate.closest_approach.distance_km
     rel_vel = candidate.closest_approach.relative_velocity_km_s
     time_to_tca = calculate_time_to_tca_minutes(candidate.tca, ref_time=ref_time)
+    pc = candidate.probability_of_collision
 
     score = calculate_risk_score(
         distance_km=dist_km,
         time_to_tca_minutes=time_to_tca,
         relative_velocity_km_s=rel_vel
     )
-    
+
     tier = classify_risk_level(
         risk_score=score,
         distance_km=dist_km,
-        time_to_tca_minutes=time_to_tca
+        time_to_tca_minutes=time_to_tca,
+        probability_of_collision=pc
     )
 
     notes = generate_risk_notes(
@@ -158,7 +185,8 @@ def assess_conjunction_risk(
         distance_km=dist_km,
         time_to_tca_minutes=time_to_tca,
         relative_velocity_km_s=rel_vel,
-        risk_level=tier
+        risk_level=tier,
+        probability_of_collision=pc
     )
 
     return RiskAssessment(
@@ -171,8 +199,9 @@ def assess_conjunction_risk(
             relative_velocity_km_s=rel_vel
         ),
         uncertainty=UncertaintyInfo(
-            model="PROTOTYPE_FIXED_UNCERTAINTY",
+            model="PROTOTYPE_FIXED_UNCERTAINTY" if pc is None else "FOSTER_2D_TLE_AGE_COVARIANCE",
             confidence="HIGH" if dist_km < 10.0 else "MODERATE"
         ),
-        notes=notes
+        notes=notes,
+        collision_probability=pc
     )

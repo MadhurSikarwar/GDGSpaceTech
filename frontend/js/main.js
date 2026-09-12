@@ -1,6 +1,9 @@
-import { state, subscribe, setObjects, setTrajectory, setConjunctions, selectObject, setActiveConjunction, setServiceStatus, setView, pushLog, setRisk, enterExplore, exitExplore, setExploreConjunction } from './state.js';
+import { state, subscribe, setObjects, upsertObject, setTrajectory, setConjunctions, addConjunctions, selectObject, setActiveConjunction, setServiceStatus, setView, pushLog, setRisk, enterExplore, exitExplore, setExploreConjunction } from './state.js';
 import * as api from './api.js';
 import { initGlobe } from './globe.js';
+import { initSpaceWeather } from './spaceweather.js';
+import { isStationActiveAt } from './groundstations.js';
+import { initTelemetryWebSocket } from './ws.js';
 import { initTopbar, initLogDrawer, toast } from './panels/topbar.js';
 import { initCatalog } from './panels/catalog.js';
 import { initConjunctions } from './panels/conjunctions.js';
@@ -19,6 +22,15 @@ let singleSelectedId = null;
 let conjunctionFocusIds = [];
 let postManeuverGhostKey = null;
 let tcaWatch = null; // { conj, tcaMinutes } — set while Explore Mode auto-plays toward a TCA
+
+// Ground-station AOS/LOS state for whichever single object is currently
+// selected. Recomputed on every sim-time change so the globe's cone
+// highlight and the selection card's badges both track the scrubbable
+// timeline, not just "now".
+const GROUND_STATION_IDS = ['SVALBARD', 'FAIRBANKS', 'MCMURDO'];
+let groundStationsList = [];
+let activeObjectPasses = null;   // GroundStationPasses for singleSelectedId
+let activeObjectGeneratedAtMs = null;
 
 const BOOT_LINES = [
   'INITIALIZING SGP4 PROPAGATION ENGINE...',
@@ -67,24 +79,118 @@ async function main() {
   initCatalog({ onSelectObject: handleSelectObject, onSyncCatalog: handleSyncCatalog });
   initConjunctions({ onOpenConjunction: handleOpenConjunction, onRunScreen: handleRunScreen });
   initPipeline({ onApprove: handleApprove });
+  initSpaceWeather();
 
   subscribe((topic) => { if (topic === 'activeConjunction') onActiveConjunctionChanged(); });
 
+  initTelemetryWebSocket({ onMessage: handleTelemetryMessage, onStatus: handleTelemetryStatus });
+
   pushLog('Mission console initialized.');
-  await Promise.all([refreshHealth(), loadObjects(), loadConjunctions()]);
+  await Promise.all([refreshHealth(), loadObjects(), loadConjunctions(), loadGroundStations()]);
   setInterval(refreshHealth, 15000);
+}
+
+// ----------------------------------------------------- telemetry (WS) --
+
+function handleTelemetryStatus(status) {
+  // The tracking service's status badge is driven entirely by the WS
+  // connection state now, not polled /health -- see refreshHealth() below,
+  // which no longer checks tracking at all.
+  setServiceStatus('tracking', status === 'open' ? 'live' : status === 'connecting' ? 'unknown' : 'down');
+}
+
+async function handleTelemetryMessage(msg) {
+  if (msg.type === 'object_updated') {
+    // Fetch just this one object's propagated state (a few hundred bytes)
+    // rather than the ~9 MB full-catalog refetch this used to trigger after
+    // every ingest/inject -- see the object cache comment in routes.py for
+    // the numbers that motivated this.
+    try {
+      const res = await fetch(`${api.BASES.tracking}/objects/${encodeURIComponent(msg.catalog_id)}`);
+      if (!res.ok) return;
+      const obj = await res.json();
+      upsertObject(obj);
+      globe.setObjects(state.objects);
+      document.getElementById('renderedCount').textContent = state.objects.length;
+    } catch (err) {
+      console.warn('[ws] object_updated fetch failed', err);
+    }
+  } else if (msg.type === 'conjunction_flagged') {
+    // Self-triggered injections already add their own conjunction from the
+    // POST response directly (see handleInjectOnTarget) -- this branch is
+    // what makes a conjunction flagged by some OTHER trigger (another
+    // client's ingest/screen call) show up here too, which is the whole
+    // point of "the UI updates globally and instantaneously."
+    if (state.conjunctions.some((c) => c.conjunction_id === msg.conjunction_id)) return;
+    await loadConjunctions();
+    pushLog(`Conjunction ${msg.conjunction_id} flagged (${msg.primary_object_name} × ${msg.secondary_object_name}, ${msg.miss_distance_km?.toFixed(2)} km).`, 'warn');
+  }
+}
+
+// -------------------------------------------------------- ground stations --
+
+async function loadGroundStations() {
+  try {
+    groundStationsList = await api.getGroundStations();
+    globe.setGroundStations(groundStationsList);
+    pushLog(`Loaded ${groundStationsList.length} ground station(s): ${groundStationsList.map((s) => s.station_id).join(', ')}.`);
+  } catch (err) {
+    console.warn('[ground-stations] unavailable', err);
+    pushLog('Ground station data unavailable — tracking service unreachable.', 'warn');
+  }
+}
+
+async function fetchPassesForSelection(catalogId) {
+  activeObjectPasses = null;
+  activeObjectGeneratedAtMs = null;
+  renderGroundStationBadges();
+  globe.clearStationActive();
+  try {
+    const passes = await api.getGroundStationPasses(catalogId, 90);
+    if (singleSelectedId !== catalogId) return; // selection changed while awaiting
+    activeObjectPasses = passes;
+    activeObjectGeneratedAtMs = new Date(passes.generated_at).getTime();
+    updateGroundStationHighlights();
+  } catch (err) {
+    console.warn('[ground-stations] pass computation unavailable', err);
+  }
+}
+
+function updateGroundStationHighlights() {
+  renderGroundStationBadges();
+  if (!activeObjectPasses) return;
+  for (const stationId of GROUND_STATION_IDS) {
+    const active = isStationActiveAt(activeObjectPasses.passes, stationId, activeObjectGeneratedAtMs, state.simMinutes);
+    globe.setStationActive(stationId, active);
+  }
+}
+
+function renderGroundStationBadges() {
+  const el = document.getElementById('scGroundStations');
+  if (!el) return;
+  if (!groundStationsList.length) { el.innerHTML = ''; return; }
+  if (!activeObjectPasses) {
+    el.innerHTML = groundStationsList.map((s) => `<span class="gs-badge">${escapeHtml(s.station_id)}</span>`).join('');
+    return;
+  }
+  el.innerHTML = GROUND_STATION_IDS.map((id) => {
+    const active = isStationActiveAt(activeObjectPasses.passes, id, activeObjectGeneratedAtMs, state.simMinutes);
+    return `<span class="gs-badge ${active ? 'active' : ''}">${active ? icons.check : ''} ${escapeHtml(id)}</span>`;
+  }).join('');
 }
 
 // ---------------------------------------------------------------- health --
 
 async function refreshHealth() {
-  const [t, r, m, o] = await Promise.all([
-    api.checkHealth(api.BASES.tracking),
+  // Tracking's status is driven by the telemetry WebSocket's own connection
+  // state (see handleTelemetryStatus) rather than polled here -- risk/
+  // maneuver/optimizer are small REST services with no socket of their own,
+  // so polling remains the right tool for those three specifically.
+  const [r, m, o] = await Promise.all([
     api.checkHealth(api.BASES.risk),
     api.checkHealth(api.BASES.maneuver),
     api.checkHealth(api.BASES.optimizer),
   ]);
-  setServiceStatus('tracking', t ? 'live' : 'down');
   setServiceStatus('risk', r ? 'live' : 'sim');
   setServiceStatus('maneuver', m ? 'live' : 'sim');
   setServiceStatus('optimizer', o ? 'live' : 'sim');
@@ -114,9 +220,40 @@ async function prefetchRisk(conj) {
   } catch { /* badge just stays PENDING */ }
 }
 
+const MU_EARTH_KM3_S2 = 398600.4418;
+
+// The timeline UI is a fixed 0-90 min window (T+00:00..T+90:00, scrubbing
+// clamped to that range), but a LEO orbital period is usually *slightly*
+// longer than 90 min (ISS ~93 min; most tracked LEO objects ~90-130 min) --
+// fetching exactly 90 min of trajectory therefore drew an arc that fell a
+// few minutes short of closing into a full loop, visible as a gap where the
+// line just stops. Fetching enough of the object's own period (from its
+// current state via vis-viva, not a generic guess) to comfortably complete
+// one revolution fixes the loop while leaving the 0-90 scrub range alone --
+// the extra tail beyond 90 min is just there to close the shape, playback
+// never scrubs into it.
+function estimateOrbitalPeriodMinutes(obj) {
+  const p = obj?.state?.position_km, v = obj?.state?.velocity_km_s;
+  if (!p || !v) return null;
+  const r = Math.hypot(p.x, p.y, p.z);
+  const speed = Math.hypot(v.x, v.y, v.z);
+  const specificEnergy = (speed * speed) / 2 - MU_EARTH_KM3_S2 / r;
+  const semiMajorAxis = -MU_EARTH_KM3_S2 / (2 * specificEnergy);
+  if (!(semiMajorAxis > 0)) return null; // non-elliptical/degenerate state -- fall back to default
+  const periodSeconds = 2 * Math.PI * Math.sqrt((semiMajorAxis ** 3) / MU_EARTH_KM3_S2);
+  return periodSeconds / 60;
+}
+
+function trajectoryHorizonFor(catalogId) {
+  const obj = state.objectsById.get(catalogId);
+  const period = estimateOrbitalPeriodMinutes(obj);
+  if (period == null) return 100; // safe generous default when state is unavailable
+  return Math.min(160, Math.max(90, Math.ceil(period * 1.03))); // small buffer so the loop visibly closes rather than just touching
+}
+
 async function fetchTrajectoryCached(catalogId) {
   if (trajectoryCache.has(catalogId)) return trajectoryCache.get(catalogId);
-  const data = await api.getTrajectory(catalogId, 90, 1.0);
+  const data = await api.getTrajectory(catalogId, trajectoryHorizonFor(catalogId), 1.0);
   trajectoryCache.set(catalogId, data);
   setTrajectory(catalogId, data);
   return data;
@@ -171,6 +308,10 @@ function clearSelection() {
   explorePane.innerHTML = '';
   document.getElementById('tlCaption').textContent = 'Select an object to play its trajectory';
   if (prev && !conjunctionFocusIds.includes(prev)) globe.unfocus(prev);
+  activeObjectPasses = null;
+  activeObjectGeneratedAtMs = null;
+  renderGroundStationBadges();
+  globe.clearStationActive();
 }
 
 async function handleSelectObject(catalogId) {
@@ -184,6 +325,7 @@ async function handleSelectObject(catalogId) {
 
   renderSelectionCard(obj);
   const color = TYPE_COLOR_HEX[obj.object_type] ?? TYPE_COLOR_HEX.UNKNOWN;
+  fetchPassesForSelection(catalogId);
 
   try {
     const traj = await fetchTrajectoryCached(catalogId);
@@ -210,7 +352,7 @@ function renderSelectionCard(obj) {
   document.getElementById('scName').textContent = obj.name;
   const badge = document.getElementById('scBadge');
   badge.className = `type-badge ${obj.object_type}`;
-  badge.textContent = obj.object_type.replace('_', ' ');
+  badge.textContent = obj.object_type.replace(/_/g, ' ');
   document.getElementById('scAlt').textContent = obj.state ? fmtKm(obj.state.altitude_km, 1) : '—';
   document.getElementById('scQuality').textContent = obj.data_quality?.quality ?? '—';
   document.getElementById('scAge').textContent = obj.data_quality ? `${fmtNum(obj.data_quality.data_age_hours, 2)}h` : '—';
@@ -489,6 +631,12 @@ function wireTimelineControls() {
     globe.setCloudsVisible(visible);
   });
 
+  document.getElementById('toggleGroundStations').addEventListener('click', (e) => {
+    const visible = !e.currentTarget.classList.contains('active');
+    e.currentTarget.classList.toggle('active', visible);
+    globe.setGroundStationsVisible(visible);
+  });
+
   setSimMinutes(0);
 
   let lastTick = performance.now();
@@ -536,6 +684,7 @@ function setSimMinutes(m) {
   const mm = Math.floor(state.simMinutes);
   const ss = Math.round((state.simMinutes - mm) * 60);
   document.getElementById('tlTime').textContent = `T+${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+  updateGroundStationHighlights();
 }
 
 function updatePlayIcon() {
@@ -561,8 +710,10 @@ async function handleSyncCatalog(group) {
 async function handleRunScreen() {
   toast('RUNNING SCREENING', 'Two-stage SGP4 screening across the tracked catalog…');
   try {
-    await api.runScreen(90, 50.0);
-    await loadConjunctions();
+    const candidates = await api.runScreen(90, 50.0);
+    // POST /screen already returns every newly-flagged candidate in full --
+    // no need to re-fetch the list we already have in hand.
+    addConjunctions(candidates);
     toast('SCREENING COMPLETE', `${state.conjunctions.length} candidate(s) flagged.`);
   } catch (err) {
     console.error(err);
@@ -594,8 +745,13 @@ async function handleInjectOnTarget(targetCatalogId) {
     const result = await api.injectSyntheticDebris(targetCatalogId);
     pushLog(`Synthetic object ${result.synthetic_object_id} injected targeting ${targetName} — encounter detected.`, 'ok');
 
-    // Refresh both objects (to render new synthetic debris) and all accumulated conjunctions
-    await Promise.all([loadObjects(), loadConjunctions()]);
+    // The POST response already carries every newly-flagged conjunction in
+    // full, and the new synthetic object's own render data (position/state)
+    // arrives moments later via the object_updated WebSocket broadcast fired
+    // by the same server-side save_object() call (see
+    // handleTelemetryMessage) -- no full ~9 MB catalog refetch needed here
+    // for either.
+    if (result.conjunction_candidates?.length) addConjunctions(result.conjunction_candidates);
 
     const newConj = result.conjunction_candidates?.[0]
       || state.conjunctions.find((c) => c.secondary_object === result.synthetic_object_id);

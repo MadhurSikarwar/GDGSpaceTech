@@ -9,6 +9,8 @@ from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, Sc
 from shared.schemas.risk import RiskAssessment, RiskFactors, UncertaintyInfo
 from shared.schemas.maneuver import ManeuverCandidate, ManeuverCandidates
 from shared.schemas.decision import ManeuverDecision, DecisionInfo, SimulationInfo
+from shared.schemas.space_weather import SpaceWeatherSnapshot
+from shared.schemas.ground_station import GroundStation, PassWindow, GroundStationPasses
 
 __all__ = [
     "OrbitalObject",
@@ -31,4 +33,8 @@ __all__ = [
     "ManeuverDecision",
     "DecisionInfo",
     "SimulationInfo",
+    "SpaceWeatherSnapshot",
+    "GroundStation",
+    "PassWindow",
+    "GroundStationPasses",
 ]

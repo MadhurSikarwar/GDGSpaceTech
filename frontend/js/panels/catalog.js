@@ -87,7 +87,7 @@ function renderList() {
       <div class="cat-row ${selected ? 'selected' : ''}" data-id="${escapeHtml(o.catalog_id)}">
         <div class="r-name">
           <span class="nm">${escapeHtml(o.name)}</span>
-          <span class="id">${escapeHtml(o.catalog_id)} · <span class="type-badge ${o.object_type}">${o.object_type.replace('_', ' ')}</span></span>
+          <span class="id">${escapeHtml(o.catalog_id)} · <span class="type-badge ${o.object_type}">${o.object_type.replace(/_/g, ' ')}</span></span>
         </div>
         <span class="r-alt">${alt}</span>
         <span class="r-age ${age.cls}">${age.text}</span>

@@ -85,6 +85,43 @@ export async function injectSyntheticDebris(targetCatalogId = '25544') {
   return fetchJSON(`${BASES.tracking}/demo/inject-synthetic?target_catalog_id=${encodeURIComponent(targetCatalogId)}`, { method: 'POST' }, 20000);
 }
 
+export async function getSpaceWeather() {
+  try {
+    return { data: await fetchJSON(`${BASES.tracking}/space-weather`, {}, 6000), live: true };
+  } catch (err) {
+    console.warn('[api] tracking /space-weather unreachable, using quiet-sun fallback', err);
+    return { data: localQuietSunSpaceWeather(), live: false };
+  }
+}
+
+// ---- Ground stations (exact trigonometry, no covariance/honesty concern --
+// unlike Pc/maneuver output, an empty result on failure is fully sufficient,
+// no client-side fallback computation needed) ----
+
+export async function getGroundStations() {
+  return fetchJSON(`${BASES.tracking}/ground-stations`, {}, 6000);
+}
+
+export async function getGroundStationPasses(catalogId, horizon = 90) {
+  const url = `${BASES.tracking}/objects/${encodeURIComponent(catalogId)}/ground-station-passes?horizon=${horizon}`;
+  return fetchJSON(url, {}, 8000);
+}
+
+// Mirrors config.py's QUIET_SUN_* settings -- the same "nothing going on"
+// baseline the backend itself falls back to when NOAA is unreachable.
+export function localQuietSunSpaceWeather() {
+  return {
+    kp_index: 2.0,
+    ap_index: 7.0,
+    f107_sfu: 150.0,
+    activity_level: 'QUIET',
+    drag_activity_scalar: 1.0,
+    fetched_at: new Date().toISOString(),
+    source: 'QUIET_SUN_FALLBACK',
+    live: false,
+  };
+}
+
 // ---- Risk / Maneuver / Optimizer — live-with-fallback ----
 
 export async function assessRisk(conj) {

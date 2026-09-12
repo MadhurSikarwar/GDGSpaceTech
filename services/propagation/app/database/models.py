@@ -36,6 +36,9 @@ class ConjunctionCandidateDB(Base):
     miss_distance_km = Column(Float, nullable=False)
     relative_velocity_km_s = Column(Float, nullable=False)
     screening_threshold_km = Column(Float, nullable=True)
+    collision_probability = Column(Float, nullable=True)
+    pc_method = Column(String(64), nullable=True)
+    combined_hard_body_radius_m = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 

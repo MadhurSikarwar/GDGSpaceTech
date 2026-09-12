@@ -1,7 +1,7 @@
 import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setRejection, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction } from '../state.js';
 import * as api from '../api.js';
 import { icons } from '../icons.js';
-import { escapeHtml, fmtKm, fmtNum, fmtRelVel, riskTierColorVar, clamp } from '../utils.js';
+import { escapeHtml, fmtKm, fmtNum, fmtRelVel, fmtPc, riskTierColorVar, clamp, cleanLabel, cleanMethodName } from '../utils.js';
 import { toast } from './topbar.js';
 
 const STAGES = [
@@ -87,6 +87,17 @@ async function runPipeline(conjId) {
  * projected post-burn conjunction state. All values come from actual
  * pipeline data — nothing is hard-coded.
  */
+// Mirrors services/risk/app/scoring.py's PC_TIER_* ladder -- used only to
+// classify a client-side-known predicted_pc (from the delta-v optimizer's
+// output) for the post-burn comparison below, never to fabricate a Pc value
+// that wasn't already computed server-side.
+function pcTier(pc) {
+  if (pc >= 1.0e-4) return 'CRITICAL';
+  if (pc >= 1.0e-5) return 'HIGH';
+  if (pc >= 1.0e-6) return 'MEDIUM';
+  return 'LOW';
+}
+
 async function runMitigationFlow(conj, maneuver) {
   const conjId = conj.conjunction_id;
   if (mitigatingSet.has(conjId)) return; // already running
@@ -97,19 +108,25 @@ async function runMitigationFlow(conj, maneuver) {
   const preVel    = conj.closest_approach.relative_velocity_km_s;
   const preRisk   = riskEntry?.data?.risk_score ?? null;
   const preLevel  = riskEntry?.data?.risk_level  ?? 'UNKNOWN';
+  // Real Pc pre/post, when the pipeline actually produced one -- distinct
+  // from preRisk/postRisk (0-100 heuristic scores, kept for the existing
+  // gauge display regardless of whether Pc is available). Populated only
+  // from data the backend/optimizer already computed, never invented here.
+  const prePc = conj.probability_of_collision ?? riskEntry?.data?.collision_probability ?? null;
+  const postPc = maneuver.predicted_pc ?? null;
 
   // Animate through steps: notify renders for each step
   const STEP_DELAY_MS = 900;
   const steps = ['pre', 'burn', 'prop', 'post', 'assess'];
 
   // Store a partial mitigation so the UI can show the progress bar
-  setMitigation(conjId, { status: 'running', step: 'pre', preMiss, preRisk, preLevel });
+  setMitigation(conjId, { status: 'running', step: 'pre', preMiss, preRisk, preLevel, prePc });
   await wait(STEP_DELAY_MS);
 
-  setMitigation(conjId, { status: 'running', step: 'burn', preMiss, preRisk, preLevel });
+  setMitigation(conjId, { status: 'running', step: 'burn', preMiss, preRisk, preLevel, prePc });
   await wait(STEP_DELAY_MS);
 
-  setMitigation(conjId, { status: 'running', step: 'prop', preMiss, preRisk, preLevel });
+  setMitigation(conjId, { status: 'running', step: 'prop', preMiss, preRisk, preLevel, prePc });
   await wait(STEP_DELAY_MS);
 
   // Build a synthetic "post-burn conjunction" object using the maneuver's projected new_separation_km
@@ -124,15 +141,21 @@ async function runMitigationFlow(conj, maneuver) {
     },
   };
 
-  setMitigation(conjId, { status: 'running', step: 'post', preMiss, preRisk, preLevel, postMiss });
+  setMitigation(conjId, { status: 'running', step: 'post', preMiss, preRisk, preLevel, prePc, postMiss });
   await wait(STEP_DELAY_MS);
 
-  setMitigation(conjId, { status: 'running', step: 'assess', preMiss, preRisk, preLevel, postMiss });
+  setMitigation(conjId, { status: 'running', step: 'assess', preMiss, preRisk, preLevel, prePc, postMiss });
 
-  // Re-assess risk on projected post-burn state (live or fallback)
+  // Re-assess risk on projected post-burn state (live or fallback) -- this
+  // stays the source of the 0-100 postRisk score either way, since that
+  // gauge exists regardless of whether Pc is available. When the maneuver
+  // DID come from the real optimizer, postPc/postLevel below are overridden
+  // with its actual predicted Pc instead of re-derived from the synthetic
+  // postConj (which carries only a distance, not a real covariance).
   const postRiskRes = await api.assessRisk(postConj);
   const postRisk  = postRiskRes.data.risk_score;
-  const postLevel = postRiskRes.data.risk_level;
+  let postLevel = postRiskRes.data.risk_level;
+  if (postPc != null) postLevel = pcTier(postPc);
 
   // Determine outcome:
   // MITIGATED   → post risk level LOW or MEDIUM and separation improved by >50%
@@ -141,7 +164,18 @@ async function runMitigationFlow(conj, maneuver) {
   const improvement = postMiss - preMiss; // km gained
   const improvePct  = preMiss > 0 ? improvement / preMiss : 0;
   let mitigationStatus;
-  if ((postLevel === 'LOW') || (postLevel === 'MEDIUM' && improvePct >= 0.5)) {
+  if (prePc != null && postPc != null) {
+    // Pc-driven outcome when the real optimizer produced one: the whole
+    // point of the constraint is postPc <= threshold, so "did we clear it"
+    // is a more direct signal than an improvement percentage.
+    if (postPc <= 1.0e-4) {
+      mitigationStatus = postPc < prePc ? 'MITIGATED' : 'MONITORING';
+    } else if (postPc < prePc) {
+      mitigationStatus = 'MONITORING';
+    } else {
+      mitigationStatus = 'ACTIVE';
+    }
+  } else if ((postLevel === 'LOW') || (postLevel === 'MEDIUM' && improvePct >= 0.5)) {
     mitigationStatus = 'MITIGATED';
   } else if (improvement > 0 && postRisk < (preRisk ?? 100)) {
     mitigationStatus = 'MONITORING';
@@ -150,7 +184,9 @@ async function runMitigationFlow(conj, maneuver) {
   }
 
   pushLog(
-    `Post-burn reassessment: ${preMiss.toFixed(2)} km → ${postMiss.toFixed(2)} km separation. Risk ${preLevel}(${(preRisk??0).toFixed(1)}) → ${postLevel}(${postRisk.toFixed(1)}). Outcome: ${mitigationStatus}`,
+    `Post-burn reassessment: ${preMiss.toFixed(2)} km → ${postMiss.toFixed(2)} km separation.` +
+    (postPc != null ? ` Pc ${fmtPc(prePc)} → ${fmtPc(postPc)}.` : ` Risk ${preLevel}(${(preRisk??0).toFixed(1)}) → ${postLevel}(${postRisk.toFixed(1)}).`) +
+    ` Outcome: ${mitigationStatus}`,
     mitigationStatus === 'MITIGATED' ? 'ok' : mitigationStatus === 'MONITORING' ? 'info' : 'warn'
   );
 
@@ -163,11 +199,13 @@ async function runMitigationFlow(conj, maneuver) {
     postRisk,
     preLevel,
     postLevel,
+    prePc,
+    postPc,
     deltaV: maneuver.delta_v_m_s,
     maneuver: maneuver.maneuver_id,
     burnDir: maneuver.burn_direction,
     computedAt: new Date().toISOString(),
-    postRiskLive: postRiskRes.live,
+    postRiskLive: postPc != null ? true : postRiskRes.live,
   });
 
   mitigatingSet.delete(conjId);
@@ -282,19 +320,24 @@ function sourceTag(live) {
 
 function conjunctionCard(conj) {
   const mins = (new Date(conj.tca) - Date.now()) / 60000;
+  const hasPc = conj.probability_of_collision !== null && conj.probability_of_collision !== undefined;
+  const screeningMethod = cleanMethodName(conj.screening?.method);
+  const pcMethod = cleanMethodName(conj.pc_method);
   return `
   <div class="stage-card">
     <div class="stage-card-head">
       <span class="stage-card-eyebrow">01 · SCREENING${sourceTag(true)}</span>
-      <span class="mono" style="font-size:9px;color:var(--ink-3)">${escapeHtml(conj.screening.method)}</span>
+      <span class="mono method-badge">${escapeHtml(screeningMethod)}</span>
     </div>
     <div class="kv-grid">
-      <div class="kv-field"><label>Primary</label><div class="v">${escapeHtml(conj.primary_object_name || conj.primary_object)}</div></div>
-      <div class="kv-field"><label>Secondary</label><div class="v">${escapeHtml(conj.secondary_object_name || conj.secondary_object)}</div></div>
+      <div class="kv-field"><label>Primary</label><div class="v">${escapeHtml(cleanLabel(conj.primary_object_name || conj.primary_object))}</div></div>
+      <div class="kv-field"><label>Secondary</label><div class="v">${escapeHtml(cleanLabel(conj.secondary_object_name || conj.secondary_object))}</div></div>
       <div class="kv-field"><label>Distance @ TCA</label><div class="v accent">${fmtKm(conj.closest_approach.distance_km)}</div></div>
       <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(conj.closest_approach.relative_velocity_km_s)}</div></div>
       <div class="kv-field"><label>Time to TCA</label><div class="v">${mins > 0 ? mins.toFixed(1) + ' min' : 'past'}</div></div>
+      <div class="kv-field"><label>Pc</label><div class="v ${hasPc ? 'accent' : ''}">${hasPc ? fmtPc(conj.probability_of_collision) : 'unavailable'}</div></div>
     </div>
+    ${hasPc ? `<div class="notes-line mono" style="font-size:9.5px">${escapeHtml(pcMethod)} · Combined HBR ${fmtNum(conj.combined_hard_body_radius_m, 0)} m</div>` : ''}
   </div>`;
 }
 
@@ -313,6 +356,9 @@ function gaugeSVG(score, colorVar) {
 function riskCard(entry) {
   const r = entry.data;
   const colorVar = `var(${riskTierColorVar(r.risk_level)})`;
+  const hasPc = r.collision_probability !== null && r.collision_probability !== undefined;
+  const modelName = cleanMethodName(r.uncertainty?.model);
+  const confidence = cleanLabel(r.uncertainty?.confidence);
   return `
   <div class="stage-card">
     <div class="stage-card-head">
@@ -323,17 +369,19 @@ function riskCard(entry) {
         ${gaugeSVG(r.risk_score, colorVar)}
         <div class="gauge-num">
           <span class="score" style="color:${colorVar}">${fmtNum(r.risk_score, 1)}</span>
-          <span class="tier">${r.risk_level}</span>
+          <span class="tier">${cleanLabel(r.risk_level)}</span>
         </div>
       </div>
       <div class="kv-grid" style="flex:1">
         <div class="kv-field"><label>Closest Approach</label><div class="v">${fmtKm(r.factors.closest_approach_km)}</div></div>
         <div class="kv-field"><label>Time to TCA</label><div class="v">${fmtNum(r.factors.time_to_tca_minutes, 1)} min</div></div>
         <div class="kv-field"><label>Rel. Velocity</label><div class="v">${fmtRelVel(r.factors.relative_velocity_km_s)}</div></div>
-        <div class="kv-field"><label>Confidence</label><div class="v">${escapeHtml(r.uncertainty.confidence)}</div></div>
+        <div class="kv-field"><label>Pc</label><div class="v" style="${hasPc ? `color:${colorVar}` : ''}">${hasPc ? fmtPc(r.collision_probability) : 'unavailable'}</div></div>
+        <div class="kv-field"><label>Uncertainty Model</label><div class="v mono method-val" title="${escapeHtml(cleanLabel(r.uncertainty?.model))}">${escapeHtml(modelName)}</div></div>
+        <div class="kv-field"><label>Confidence</label><div class="v">${escapeHtml(confidence)}</div></div>
       </div>
     </div>
-    ${r.notes ? `<div class="notes-line">${escapeHtml(r.notes)}</div>` : ''}
+    ${r.notes ? `<div class="notes-line">${escapeHtml(cleanLabel(r.notes))}</div>` : ''}
   </div>`;
 }
 
@@ -346,23 +394,29 @@ function burnIcon(dir) {
 function maneuverCard(manEntry, decEntry, selectedId, approved) {
   const candidates = manEntry.data.candidates;
   const recommendedId = decEntry?.data?.decision?.recommended_maneuver_id;
+  const isOptimized = candidates.some((c) => c.is_optimizer_minimum != null);
   return `
   <div class="stage-card">
     <div class="stage-card-head">
       <span class="stage-card-eyebrow">03 · MANEUVER CANDIDATES${sourceTag(manEntry.live)}</span>
       <span class="mono" style="font-size:9px;color:var(--ink-3)">${approved ? 'LOCKED' : 'CLICK TO SELECT'}</span>
     </div>
+    ${isOptimized ? `<div class="notes-line mono" style="font-size:9px;margin-top:0;padding-top:0;border-top:none">scipy.optimize (SLSQP) · Clohessy-Wiltshire relative motion · minimizes ‖Δv‖ s.t. Pc ≤ ${fmtPc(1e-4)} and slot-retention</div>` : ''}
     <div class="maneuver-grid">
       ${candidates.map((c) => `
         <div class="maneuver-option ${c.maneuver_id === selectedId ? 'selected' : ''}" data-id="${c.maneuver_id}">
           <div class="mo-head">
-            <span class="mo-id">${c.maneuver_id}</span>
+            <span class="mo-id">${escapeHtml(c.maneuver_id)}</span>
             ${c.maneuver_id === recommendedId ? '<span class="recommended-tag">Optimizer pick</span>' : ''}
+            ${c.is_optimizer_minimum ? '<span class="recommended-tag" style="background:var(--green-dim);color:var(--green)">Fuel-optimal</span>' : ''}
           </div>
-          <div class="mo-row"><span>Direction</span><span class="mo-v burn-dir">${burnIcon(c.burn_direction)}${c.burn_direction}</span></div>
+          <div class="mo-row"><span>Direction</span><span class="mo-v burn-dir">${burnIcon(c.burn_direction)}${escapeHtml(cleanLabel(c.burn_direction))}</span></div>
           <div class="mo-row"><span>Delta-V</span><span class="mo-v">${c.delta_v_m_s.toFixed(2)} m/s</span></div>
+          ${c.delta_v_vector ? `<div class="mo-row"><span>Δv (R/I/C)</span><span class="mo-v mono" style="font-size:10px">${c.delta_v_vector.x.toFixed(2)}, ${c.delta_v_vector.y.toFixed(2)}, ${c.delta_v_vector.z.toFixed(2)}</span></div>` : ''}
           <div class="mo-row"><span>New Separation</span><span class="mo-v">${fmtKm(c.new_separation_km)}</span></div>
-          <div class="mo-row"><span>Resulting Risk</span><span class="risk-tag ${c.resulting_risk}" style="padding:1px 7px;font-size:8.5px">${c.resulting_risk}</span></div>
+          ${c.predicted_pc != null ? `<div class="mo-row"><span>Predicted Pc</span><span class="mo-v">${fmtPc(c.predicted_pc)}</span></div>` : ''}
+          <div class="mo-row"><span>Resulting Risk</span><span class="risk-tag ${c.resulting_risk}" style="padding:1px 7px;font-size:8.5px">${escapeHtml(cleanLabel(c.resulting_risk))}</span></div>
+          ${c.constraint_status ? `<div class="mo-row"><span>Constraint</span><span class="mo-v mono" style="font-size:9px">${escapeHtml(cleanLabel(c.constraint_status))}</span></div>` : ''}
         </div>`).join('')}
     </div>
   </div>`;
@@ -377,7 +431,7 @@ function decisionCard(decEntry) {
     </div>
     <div class="decision-reason">
       ${icons.info}
-      <p><b>Recommended: ${escapeHtml(d.decision.recommended_maneuver_id)}.</b> ${escapeHtml(d.decision.reason)}</p>
+      <p><b>Recommended: ${escapeHtml(d.decision.recommended_maneuver_id)}.</b> ${escapeHtml(cleanLabel(d.decision.reason))}</p>
     </div>
   </div>`;
 }
@@ -390,7 +444,7 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
       <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL</span></div>
       <div class="approved-banner">
         ${icons.check}
-        <div>Maneuver <b>${escapeHtml(approval.maneuverId)}</b> (${m ? m.burn_direction : ''}, ${m ? m.delta_v_m_s.toFixed(2) : '—'} m/s) approved and queued for simulation. Projected separation ${m ? fmtKm(m.new_separation_km) : '—'}. This is a decision-support simulation — no command was sent to hardware.</div>
+        <div>Maneuver <b>${escapeHtml(approval.maneuverId)}</b> (${m ? escapeHtml(cleanLabel(m.burn_direction)) : ''}, ${m ? m.delta_v_m_s.toFixed(2) : '—'} m/s) approved and queued for simulation. Projected separation ${m ? fmtKm(m.new_separation_km) : '—'}. This is a decision-support simulation — no command was sent to hardware.</div>
       </div>
     </div>`;
   }
@@ -412,10 +466,10 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
     <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL GATE</span></div>
     <div class="approval-gate">
       <div class="ag-label">Operator confirmation required</div>
-      <div class="ag-desc">OrbitalGuard does not command hardware. Approving <b>${selected?.maneuver_id}</b> only records a simulated go-ahead and re-plots the projected trajectory for review.</div>
+      <div class="ag-desc">OrbitalGuard does not command hardware. Approving <b>${escapeHtml(selected?.maneuver_id)}</b> only records a simulated go-ahead and re-plots the projected trajectory for review.</div>
       <div class="approval-actions">
         <button class="btn btn-danger btn-md" id="rejectBtn">${icons.close} REJECT</button>
-        <button class="btn btn-safe btn-lg" id="approveBtn">${icons.check} APPROVE MANEUVER ${selected?.maneuver_id}</button>
+        <button class="btn btn-safe btn-lg" id="approveBtn">${icons.check} APPROVE MANEUVER ${escapeHtml(selected?.maneuver_id)}</button>
       </div>
     </div>
   </div>`;
@@ -464,7 +518,7 @@ function mitigationCard(conj, mitigation, manEntry, approval) {
     </div>`;
   }
 
-  const { status, step, preMiss, postMiss, preRisk, postRisk, preLevel, postLevel, deltaV, maneuver: mId, burnDir, postRiskLive } = mitigation;
+  const { status, step, preMiss, postMiss, preRisk, postRisk, preLevel, postLevel, prePc, postPc, deltaV, maneuver: mId, burnDir, postRiskLive } = mitigation;
 
   // Running — show animated step track + partial data
   if (status === 'running') {
@@ -514,22 +568,23 @@ function mitigationCard(conj, mitigation, manEntry, approval) {
           ${gaugeSVG(preRisk ?? 0, preColorVar)}
           <div class="gauge-num">
             <span class="score" style="color:${preColorVar}">${fmtNum(preRisk, 1)}</span>
-            <span class="tier">${preLevel}</span>
+            <span class="tier">${cleanLabel(preLevel)}</span>
           </div>
         </div>
         <div class="mit-stat"><label>Miss Distance</label><span>${fmtKm(preMiss)}</span></div>
+        ${prePc != null ? `<div class="mit-stat"><label>Pc</label><span style="color:${preColorVar}">${fmtPc(prePc)}</span></div>` : ''}
         <div class="mit-stat"><label>Risk Score</label><span style="color:${preColorVar}">${fmtNum(preRisk, 1)} / 100</span></div>
-        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${preLevel}" style="font-size:9px;padding:2px 8px">${preLevel}</span></div>
+        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${preLevel}" style="font-size:9px;padding:2px 8px">${cleanLabel(preLevel)}</span></div>
       </div>
 
       <div class="mit-arrow-col">
         <div class="mit-arrow-container">
           <div class="mit-arrow-line"></div>
           <div class="mit-arrow-head">${icons.fly}</div>
-          <div class="mit-dv-label">${deltaV?.toFixed(2) ?? '—'} m/s<br/><span style="font-size:8px;opacity:0.7">${burnDir ?? ''}</span></div>
+          <div class="mit-dv-label">${deltaV?.toFixed(2) ?? '—'} m/s<br/><span style="font-size:8px;opacity:0.7">${cleanLabel(burnDir ?? '')}</span></div>
         </div>
         ${missImprovement != null ? `<div class="mit-improvement ${missImprovement >= 0 ? 'positive' : 'negative'}">+${missImprovement.toFixed(0)}% sep</div>` : ''}
-        ${riskImprovement != null ? `<div class="mit-improvement ${riskImprovement >= 0 ? 'positive' : 'negative'}">${riskImprovement >= 0 ? '↓' : '↑'}${Math.abs(riskImprovement).toFixed(1)} risk</div>` : ''}
+        ${prePc != null && postPc != null ? `<div class="mit-improvement ${postPc <= prePc ? 'positive' : 'negative'}">${postPc <= prePc ? '↓' : '↑'}Pc</div>` : riskImprovement != null ? `<div class="mit-improvement ${riskImprovement >= 0 ? 'positive' : 'negative'}">${riskImprovement >= 0 ? '↓' : '↑'}${Math.abs(riskImprovement).toFixed(1)} risk</div>` : ''}
       </div>
 
       <div class="mit-col post">
@@ -538,12 +593,13 @@ function mitigationCard(conj, mitigation, manEntry, approval) {
           ${gaugeSVG(postRisk ?? 0, postColorVar)}
           <div class="gauge-num">
             <span class="score" style="color:${postColorVar}">${fmtNum(postRisk, 1)}</span>
-            <span class="tier">${postLevel}</span>
+            <span class="tier">${cleanLabel(postLevel)}</span>
           </div>
         </div>
         <div class="mit-stat"><label>Miss Distance</label><span>${fmtKm(postMiss)}</span></div>
+        ${postPc != null ? `<div class="mit-stat"><label>Pc</label><span style="color:${postColorVar}">${fmtPc(postPc)}</span></div>` : ''}
         <div class="mit-stat"><label>Risk Score</label><span style="color:${postColorVar}">${fmtNum(postRisk, 1)} / 100</span></div>
-        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${postLevel}" style="font-size:9px;padding:2px 8px">${postLevel}</span></div>
+        <div class="mit-stat"><label>Risk Level</label><span class="risk-tag ${postLevel}" style="font-size:9px;padding:2px 8px">${cleanLabel(postLevel)}</span></div>
       </div>
     </div>
 

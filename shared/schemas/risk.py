@@ -20,3 +20,8 @@ class RiskAssessment(BaseModel):
     factors: RiskFactors = Field(..., description="Risk assessment input factors")
     uncertainty: UncertaintyInfo = Field(..., description="Uncertainty estimation metrics")
     notes: Optional[str] = Field(default=None, description="Additional agent summary or evaluation notes")
+    collision_probability: Optional[float] = Field(
+        default=None,
+        description="Pc carried through from the source ConjunctionCandidate, when available. "
+                     "Drives risk_level classification via classify_risk_level() when present."
+    )

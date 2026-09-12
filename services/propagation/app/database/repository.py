@@ -1,11 +1,15 @@
 import json
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 from services.propagation.app.config import settings
 from services.propagation.app.database.models import Base, ObjectDB, ConjunctionCandidateDB, HistoricalTLEDB
+from services.propagation.app.realtime.connection_manager import manager as ws_manager
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
+
+logger = logging.getLogger(__name__)
 
 
 # Connect to DB engine with automatic SQLite fallback
@@ -26,6 +30,37 @@ except Exception:
 def init_db():
     """Create all database tables."""
     Base.metadata.create_all(bind=engine)
+    migrate_additive_columns()
+
+
+# SQLAlchemy's create_all() only creates missing TABLES -- it never alters an
+# existing table's columns. orbitalguard.db already has a populated
+# conjunction_candidates table (from before Pc support existed), so adding
+# new Column(...) definitions to ConjunctionCandidateDB above does nothing to
+# the live DB file on its own. This runs once at startup and additively
+# ALTERs in whatever columns the current model declares but the live table
+# is still missing -- nullable columns only, so existing rows just read back
+# NULL for them, nothing is dropped or rewritten. SQLite supports additive
+# `ALTER TABLE ... ADD COLUMN` natively, which is all this needs.
+def migrate_additive_columns():
+    inspector = inspect(engine)
+    if "conjunction_candidates" not in inspector.get_table_names():
+        return  # create_all() just made it fresh with every current column
+
+    existing_cols = {c["name"] for c in inspector.get_columns("conjunction_candidates")}
+    additive = {
+        "collision_probability": "FLOAT",
+        "pc_method": "VARCHAR(64)",
+        "combined_hard_body_radius_m": "FLOAT",
+    }
+    missing = {name: sql_type for name, sql_type in additive.items() if name not in existing_cols}
+    if not missing:
+        return
+
+    with engine.begin() as conn:
+        for name, sql_type in missing.items():
+            conn.execute(text(f"ALTER TABLE conjunction_candidates ADD COLUMN {name} {sql_type}"))
+            logger.info(f"Migrated conjunction_candidates: added column '{name}' ({sql_type}).")
 
 
 def get_db():
@@ -96,6 +131,12 @@ class DatabaseRepository:
 
         global _objects_version
         _objects_version += 1
+        ws_manager.broadcast_threadsafe({
+            "type": "object_updated",
+            "catalog_id": db_obj.catalog_id,
+            "object_type": db_obj.object_type,
+            "name": db_obj.name,
+        })
 
         return db_obj
 
@@ -137,6 +178,7 @@ class DatabaseRepository:
         db_conj = self.db.query(ConjunctionCandidateDB).filter(
             ConjunctionCandidateDB.conjunction_id == candidate.conjunction_id
         ).first()
+        is_new = db_conj is None
 
         if not db_conj:
             db_conj = ConjunctionCandidateDB(
@@ -149,6 +191,9 @@ class DatabaseRepository:
                 miss_distance_km=candidate.closest_approach.distance_km,
                 relative_velocity_km_s=candidate.closest_approach.relative_velocity_km_s,
                 screening_threshold_km=candidate.screening.threshold_km,
+                collision_probability=candidate.probability_of_collision,
+                pc_method=candidate.pc_method,
+                combined_hard_body_radius_m=candidate.combined_hard_body_radius_m,
                 created_at=candidate.created_at
             )
             self.db.add(db_conj)
@@ -156,9 +201,21 @@ class DatabaseRepository:
             db_conj.tca = candidate.tca
             db_conj.miss_distance_km = candidate.closest_approach.distance_km
             db_conj.relative_velocity_km_s = candidate.closest_approach.relative_velocity_km_s
+            db_conj.collision_probability = candidate.probability_of_collision
+            db_conj.pc_method = candidate.pc_method
+            db_conj.combined_hard_body_radius_m = candidate.combined_hard_body_radius_m
 
         self.db.commit()
         self.db.refresh(db_conj)
+        if is_new:
+            ws_manager.broadcast_threadsafe({
+                "type": "conjunction_flagged",
+                "conjunction_id": db_conj.conjunction_id,
+                "primary_object_name": db_conj.primary_object_name,
+                "secondary_object_name": db_conj.secondary_object_name,
+                "miss_distance_km": db_conj.miss_distance_km,
+                "probability_of_collision": db_conj.collision_probability,
+            })
         return db_conj
 
     def get_conjunctions(self) -> List[ConjunctionCandidate]:
@@ -195,6 +252,9 @@ class DatabaseRepository:
                     primary_source="CelesTrak",
                     propagator="SGP4"
                 ),
-                created_at=r.created_at
+                created_at=r.created_at,
+                probability_of_collision=r.collision_probability,
+                pc_method=r.pc_method,
+                combined_hard_body_radius_m=r.combined_hard_body_radius_m
             ))
         return result

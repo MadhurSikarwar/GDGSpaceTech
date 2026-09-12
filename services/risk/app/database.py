@@ -32,17 +32,29 @@ def get_conjunction_from_db(conjunction_id: str) -> Optional[ConjunctionCandidat
     
     session = _session_factory()
     try:
-        from services.propagation.app.database.models import ConjunctionCandidateDB
+        from services.propagation.app.database.models import ConjunctionCandidateDB, ObjectDB
         from shared.schemas.conjunction import ClosestApproach, ScreeningInfo, DataProvenance
 
         record = session.query(ConjunctionCandidateDB).filter(ConjunctionCandidateDB.conjunction_id == conjunction_id).first()
         if not record:
             return None
-        
+
+        # primary_object_id/secondary_object_id store ObjectDB's own opaque
+        # UUID primary key, not the NORAD/catalog_id every consumer actually
+        # joins on elsewhere (repository.py's own get_conjunctions() already
+        # resolves this the same way) -- returning the raw UUID here instead
+        # silently broke any caller that tries to look an object back up by
+        # what this returns, e.g. the delta-v optimizer resolving TLEs.
+        def _catalog_id(object_uuid: Optional[str]) -> str:
+            if not object_uuid:
+                return ""
+            obj = session.query(ObjectDB).filter(ObjectDB.object_id == object_uuid).first()
+            return obj.catalog_id if obj else ""
+
         return ConjunctionCandidate(
             conjunction_id=record.conjunction_id,
-            primary_object=record.primary_object_id or "",
-            secondary_object=record.secondary_object_id or "",
+            primary_object=_catalog_id(record.primary_object_id),
+            secondary_object=_catalog_id(record.secondary_object_id),
             primary_object_name=record.primary_object_name,
             secondary_object_name=record.secondary_object_name,
             tca=record.tca,
@@ -58,7 +70,10 @@ def get_conjunction_from_db(conjunction_id: str) -> Optional[ConjunctionCandidat
                 primary_source="CelesTrak",
                 propagator="SGP4"
             ),
-            created_at=record.created_at
+            created_at=record.created_at,
+            probability_of_collision=getattr(record, "collision_probability", None),
+            pc_method=getattr(record, "pc_method", None),
+            combined_hard_body_radius_m=getattr(record, "combined_hard_body_radius_m", None)
         )
     except Exception as e:
         logger.warning(f"Error querying conjunction {conjunction_id} from DB: {e}")
@@ -88,6 +103,7 @@ def save_risk_assessment_to_db(assessment: RiskAssessment) -> bool:
             closest_approach_km=assessment.factors.closest_approach_km,
             time_to_tca_minutes=assessment.factors.time_to_tca_minutes,
             relative_velocity_km_s=assessment.factors.relative_velocity_km_s,
+            collision_probability=assessment.collision_probability,
             uncertainty_model=assessment.uncertainty.model,
             confidence=assessment.uncertainty.confidence,
             notes=assessment.notes

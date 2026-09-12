@@ -8,9 +8,19 @@ logger = logging.getLogger(__name__)
 
 
 class ScreeningPipeline:
-    def __init__(self, threshold_km: Optional[float] = None, buffer_km: Optional[float] = None):
+    def __init__(
+        self,
+        threshold_km: Optional[float] = None,
+        buffer_km: Optional[float] = None,
+        combined_hbr_km: Optional[float] = None,
+        drag_activity_scalar: float = 1.0,
+    ):
         self.coarse_filter = CoarseFilter(buffer_km=buffer_km)
-        self.fine_filter = FineFilter(threshold_km=threshold_km)
+        self.fine_filter = FineFilter(
+            threshold_km=threshold_km,
+            combined_hbr_km=combined_hbr_km,
+            drag_activity_scalar=drag_activity_scalar,
+        )
 
     def run_screening(
         self,
