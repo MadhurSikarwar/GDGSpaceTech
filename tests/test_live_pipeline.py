@@ -3,6 +3,12 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from fastapi.testclient import TestClient
 from services.propagation.app.main import app as prop_app
 from services.risk.app.main import app as risk_app

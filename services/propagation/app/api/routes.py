@@ -75,22 +75,22 @@ def get_objects(
 
     results: List[OrbitalObject] = []
     for o in db_objs:
-        engine = SGP4PropagationEngine(o.tle_line_1, o.tle_line_2, o.object_name)
+        engine = SGP4PropagationEngine(o.raw_tle_line1, o.raw_tle_line2, o.name)
         state = engine.propagate_state(now_dt)
         data_quality = engine.calculate_data_age(o.epoch, now_dt)
 
         obj = OrbitalObject(
-            object_id=o.id,
+            object_id=o.object_id,
             catalog_id=o.catalog_id,
-            name=o.object_name,
+            name=o.name,
             object_type=ObjectType(o.object_type) if o.object_type in ObjectType.__members__ else ObjectType.UNKNOWN,
             international_designator=o.international_designator,
             orbital_data=OrbitalData(
                 epoch=o.epoch,
                 source=o.source or "CelesTrak",
                 format="TLE",
-                raw_tle_line1=o.tle_line_1,
-                raw_tle_line2=o.tle_line_2
+                raw_tle_line1=o.raw_tle_line1,
+                raw_tle_line2=o.raw_tle_line2
             ),
             state=state,
             propagation=PropagationInfo(model="SGP4", reference_frame="TEME"),
@@ -108,28 +108,28 @@ def get_object_detail(object_id: str, db: Session = Depends(get_db)):
     if not o:
         # Search by database primary key ID
         objs = repo.get_all_objects()
-        o = next((item for item in objs if item.id == object_id), None)
+        o = next((item for item in objs if item.object_id == object_id), None)
 
     if not o:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Object '{object_id}' not found.")
 
     now_dt = datetime.now(timezone.utc)
-    engine = SGP4PropagationEngine(o.tle_line_1, o.tle_line_2, o.object_name)
+    engine = SGP4PropagationEngine(o.raw_tle_line1, o.raw_tle_line2, o.name)
     state = engine.propagate_state(now_dt)
     data_quality = engine.calculate_data_age(o.epoch, now_dt)
 
     return OrbitalObject(
-        object_id=o.id,
+        object_id=o.object_id,
         catalog_id=o.catalog_id,
-        name=o.object_name,
+        name=o.name,
         object_type=ObjectType(o.object_type) if o.object_type in ObjectType.__members__ else ObjectType.UNKNOWN,
         international_designator=o.international_designator,
         orbital_data=OrbitalData(
             epoch=o.epoch,
             source=o.source or "CelesTrak",
             format="TLE",
-            raw_tle_line1=o.tle_line_1,
-            raw_tle_line2=o.tle_line_2
+            raw_tle_line1=o.raw_tle_line1,
+            raw_tle_line2=o.raw_tle_line2
         ),
         state=state,
         propagation=PropagationInfo(model="SGP4", reference_frame="TEME"),
@@ -148,17 +148,17 @@ def get_object_trajectory(
     o = repo.get_object_by_catalog_id(object_id)
     if not o:
         objs = repo.get_all_objects()
-        o = next((item for item in objs if item.id == object_id), None)
+        o = next((item for item in objs if item.object_id == object_id), None)
 
     if not o:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Object '{object_id}' not found.")
 
     traj = generate_trajectory(
-        object_id=o.id,
+        object_id=o.object_id,
         catalog_id=o.catalog_id,
-        name=o.object_name,
-        tle_line1=o.tle_line_1,
-        tle_line2=o.tle_line_2,
+        name=o.name,
+        tle_line1=o.raw_tle_line1,
+        tle_line2=o.raw_tle_line2,
         horizon_minutes=horizon,
         step_minutes=step
     )
@@ -182,10 +182,10 @@ def run_screening_pipeline(
     for o in db_objs:
         objects_data.append({
             "catalog_id": o.catalog_id,
-            "name": o.object_name,
+            "name": o.name,
             "object_type": o.object_type,
-            "tle_line_1": o.tle_line_1,
-            "tle_line_2": o.tle_line_2,
+            "tle_line_1": o.raw_tle_line1,
+            "tle_line_2": o.raw_tle_line2,
             "source": o.source
         })
 
@@ -224,9 +224,9 @@ def inject_synthetic_demo(
 
     target_data = {
         "catalog_id": target.catalog_id,
-        "name": target.object_name,
-        "tle_line_1": target.tle_line_1,
-        "tle_line_2": target.tle_line_2
+        "name": target.name,
+        "tle_line_1": target.raw_tle_line1,
+        "tle_line_2": target.raw_tle_line2
     }
 
     synth_item = generate_verified_synthetic_debris(target_data, tca_offset_minutes=45.0, target_separation_km=8.2)
@@ -250,7 +250,7 @@ def inject_synthetic_demo(
     return {
         "message": f"Successfully injected synthetic object {synth_item['name']}.",
         "synthetic_object_id": synth_db.catalog_id,
-        "target_satellite": target.object_name,
+        "target_satellite": target.name,
         "conjunctions_detected": len(conjunctions),
         "conjunction_candidates": conjunctions
     }

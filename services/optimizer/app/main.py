@@ -1,8 +1,10 @@
 import os
+from typing import Optional
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Body, Query
 from shared.schemas.maneuver import ManeuverCandidates
 from shared.schemas.decision import ManeuverDecision, DecisionInfo, SimulationInfo
+from services.maneuver.app.main import get_cached_maneuvers, generate_maneuvers
 
 app = FastAPI(
     title="OrbitalGuard Optimizer Agent",
@@ -61,8 +63,17 @@ def generate_reasoning(optimal_candidate, primary_object: str) -> str:
                 data = response.json()
                 content = data["choices"][0]["message"]["content"].strip()
                 if content:
-                    # Normalize non-standard unicode characters (e.g. narrow non-breaking spaces)
-                    cleaned = content.replace('\u202f', ' ').replace('\u00a0', ' ').replace('\u2019', "'").replace('\u2018', "'")
+                    # Normalize non-standard unicode characters (e.g. narrow non-breaking spaces, non-breaking hyphens)
+                    cleaned = (
+                        content.replace('\u202f', ' ')
+                        .replace('\u00a0', ' ')
+                        .replace('\u2019', "'")
+                        .replace('\u2018', "'")
+                        .replace('\u2011', '-')
+                        .replace('\u2013', '-')
+                        .replace('\u2014', '-')
+                        .replace('\u0394', 'Delta-')
+                    )
                     return cleaned
         except Exception as e:
             continue
@@ -71,13 +82,36 @@ def generate_reasoning(optimal_candidate, primary_object: str) -> str:
 
 
 @app.post("/optimize-decision", response_model=ManeuverDecision)
-def optimize_decision(candidates_payload: ManeuverCandidates):
+def optimize_decision(
+    candidates_payload: Optional[ManeuverCandidates] = Body(None, description="Direct ManeuverCandidates payload"),
+    conjunction_id: Optional[str] = Query(None, description="ID of conjunction candidate to optimize")
+):
     """
     Selects optimal candidate and outputs ManeuverDecision contract.
+    Accepts direct ManeuverCandidates body, or resolves candidates by conjunction_id.
     """
-    if not candidates_payload.candidates:
+    target_payload = candidates_payload
+
+    if target_payload is None:
+        if not conjunction_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Either a ManeuverCandidates JSON body or a 'conjunction_id' query parameter must be provided."
+            )
+        
+        target_payload = get_cached_maneuvers(conjunction_id)
+        if target_payload is None:
+            try:
+                target_payload = generate_maneuvers(conjunction_id=conjunction_id)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Maneuver candidates for conjunction '{conjunction_id}' not found: {e}"
+                )
+
+    if not target_payload.candidates:
         return ManeuverDecision(
-            conjunction_id=candidates_payload.conjunction_id,
+            conjunction_id=target_payload.conjunction_id,
             decision=DecisionInfo(
                 recommended_maneuver_id="NONE",
                 reason="No maneuver required. Conjunction risk is already within acceptable limits."
@@ -90,23 +124,31 @@ def optimize_decision(candidates_payload: ManeuverCandidates):
         )
     
     # Filter for LOW risk candidates
-    viable_candidates = [c for c in candidates_payload.candidates if c.resulting_risk == "LOW"]
+    viable_candidates = [c for c in target_payload.candidates if c.resulting_risk == "LOW"]
     
     # If no LOW risk, fallback to MEDIUM
     if not viable_candidates:
-        viable_candidates = [c for c in candidates_payload.candidates if c.resulting_risk == "MEDIUM"]
+        viable_candidates = [c for c in target_payload.candidates if c.resulting_risk == "MEDIUM"]
     
     # If still none, pick the one with max separation to maximize safety
     if not viable_candidates:
-        optimal_candidate = max(candidates_payload.candidates, key=lambda c: c.new_separation_km)
+        optimal_candidate = max(target_payload.candidates, key=lambda c: c.new_separation_km)
     else:
         # Select the one with minimum delta-V
         optimal_candidate = min(viable_candidates, key=lambda c: c.delta_v_m_s)
         
-    reason_str = generate_reasoning(optimal_candidate, candidates_payload.primary_object)
+    reason_str = generate_reasoning(optimal_candidate, target_payload.primary_object)
     
+    # Save maneuver decision to database (Supabase/PostgreSQL)
+    save_maneuver_decision_to_db(
+        conjunction_id=target_payload.conjunction_id,
+        optimal_candidate=optimal_candidate,
+        reason=reason_str,
+        approval_status="PENDING"
+    )
+
     return ManeuverDecision(
-        conjunction_id=candidates_payload.conjunction_id,
+        conjunction_id=target_payload.conjunction_id,
         decision=DecisionInfo(
             recommended_maneuver_id=optimal_candidate.maneuver_id,
             reason=reason_str
@@ -117,3 +159,35 @@ def optimize_decision(candidates_payload: ManeuverCandidates):
             new_tca_distance_km=optimal_candidate.new_separation_km
         )
     )
+
+
+def save_maneuver_decision_to_db(conjunction_id: str, optimal_candidate, reason: str, approval_status: str = "PENDING") -> bool:
+    """Persists the optimized maneuver decision and Groq reasoning to PostgreSQL."""
+    try:
+        from services.propagation.app.database.repository import SessionLocal
+        from services.propagation.app.database.models import ManeuverDecisionDB
+
+        session = SessionLocal()
+        try:
+            existing = session.query(ManeuverDecisionDB).filter(ManeuverDecisionDB.conjunction_id == conjunction_id).first()
+            if existing:
+                existing.recommended_maneuver_id = optimal_candidate.maneuver_id if optimal_candidate else "NONE"
+                existing.new_tca_distance_km = optimal_candidate.new_separation_km if optimal_candidate else 0.0
+                existing.decision_reason = reason
+                existing.simulation_status = approval_status
+            else:
+                record = ManeuverDecisionDB(
+                    conjunction_id=conjunction_id,
+                    recommended_maneuver_id=optimal_candidate.maneuver_id if optimal_candidate else "NONE",
+                    new_tca_distance_km=optimal_candidate.new_separation_km if optimal_candidate else 0.0,
+                    decision_reason=reason,
+                    simulation_status=approval_status
+                )
+                session.add(record)
+            session.commit()
+            return True
+        finally:
+            session.close()
+    except Exception as e:
+        print(f"Notice: Failed to persist maneuver decision to DB: {e}")
+    return False

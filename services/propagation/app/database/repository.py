@@ -4,7 +4,7 @@ from typing import List, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from services.propagation.app.config import settings
-from services.propagation.app.database.models import Base, ObjectDB, ConjunctionDB, HistoricalTLEDB
+from services.propagation.app.database.models import Base, ObjectDB, ConjunctionCandidateDB, HistoricalTLEDB
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
 
 
@@ -54,49 +54,33 @@ class DatabaseRepository:
         raw_data: Optional[dict] = None
     ) -> ObjectDB:
         db_obj = self.db.query(ObjectDB).filter(ObjectDB.catalog_id == catalog_id).first()
-        raw_str = json.dumps(raw_data) if raw_data else None
 
         now_dt = datetime.now(timezone.utc)
 
         if not db_obj:
+            import uuid
             db_obj = ObjectDB(
+                object_id=str(uuid.uuid4()),
                 catalog_id=catalog_id,
-                object_name=name,
+                name=name,
                 object_type=object_type,
                 international_designator=international_designator,
                 epoch=epoch,
                 source=source,
-                tle_line_1=tle_line_1,
-                tle_line_2=tle_line_2,
-                raw_data=raw_str,
-                ingested_at=now_dt
+                raw_tle_line1=tle_line_1 or "",
+                raw_tle_line2=tle_line_2 or ""
             )
             self.db.add(db_obj)
         else:
-            db_obj.object_name = name
+            db_obj.name = name
             db_obj.object_type = object_type
             db_obj.epoch = epoch
             db_obj.source = source
-            db_obj.tle_line_1 = tle_line_1
-            db_obj.tle_line_2 = tle_line_2
-            db_obj.raw_data = raw_str
-            db_obj.updated_at = now_dt
+            db_obj.raw_tle_line1 = tle_line_1 or ""
+            db_obj.raw_tle_line2 = tle_line_2 or ""
 
         self.db.commit()
         self.db.refresh(db_obj)
-
-        # Save historical snapshot
-        if tle_line_1 and tle_line_2:
-            hist = HistoricalTLEDB(
-                object_id=db_obj.id,
-                catalog_id=catalog_id,
-                epoch=epoch,
-                raw_tle=f"{tle_line_1}\n{tle_line_2}",
-                source=source,
-                timestamp=now_dt
-            )
-            self.db.add(hist)
-            self.db.commit()
 
         return db_obj
 
@@ -109,48 +93,65 @@ class DatabaseRepository:
     def get_object_by_catalog_id(self, catalog_id: str) -> Optional[ObjectDB]:
         return self.db.query(ObjectDB).filter(ObjectDB.catalog_id == catalog_id).first()
 
-    def save_conjunction(self, candidate: ConjunctionCandidate) -> ConjunctionDB:
-        db_conj = self.db.query(ConjunctionDB).filter(
-            ConjunctionDB.conjunction_id == candidate.conjunction_id
+    def save_conjunction(self, candidate: ConjunctionCandidate) -> ConjunctionCandidateDB:
+        primary_obj = self.get_object_by_catalog_id(candidate.primary_object)
+        secondary_obj = self.get_object_by_catalog_id(candidate.secondary_object)
+        
+        primary_id = primary_obj.object_id if primary_obj else None
+        secondary_id = secondary_obj.object_id if secondary_obj else None
+
+        db_conj = self.db.query(ConjunctionCandidateDB).filter(
+            ConjunctionCandidateDB.conjunction_id == candidate.conjunction_id
         ).first()
 
         if not db_conj:
-            db_conj = ConjunctionDB(
+            db_conj = ConjunctionCandidateDB(
                 conjunction_id=candidate.conjunction_id,
-                satellite_id=candidate.primary_object,
-                debris_id=candidate.secondary_object,
+                primary_object_id=primary_id,
+                secondary_object_id=secondary_id,
                 primary_object_name=candidate.primary_object_name,
                 secondary_object_name=candidate.secondary_object_name,
                 tca=candidate.tca,
-                closest_approach_km=candidate.closest_approach.distance_km,
-                relative_velocity_kms=candidate.closest_approach.relative_velocity_km_s,
+                miss_distance_km=candidate.closest_approach.distance_km,
+                relative_velocity_km_s=candidate.closest_approach.relative_velocity_km_s,
                 screening_threshold_km=candidate.screening.threshold_km,
                 created_at=candidate.created_at
             )
             self.db.add(db_conj)
         else:
             db_conj.tca = candidate.tca
-            db_conj.closest_approach_km = candidate.closest_approach.distance_km
-            db_conj.relative_velocity_kms = candidate.closest_approach.relative_velocity_km_s
+            db_conj.miss_distance_km = candidate.closest_approach.distance_km
+            db_conj.relative_velocity_km_s = candidate.closest_approach.relative_velocity_km_s
 
         self.db.commit()
         self.db.refresh(db_conj)
         return db_conj
 
     def get_conjunctions(self) -> List[ConjunctionCandidate]:
-        records = self.db.query(ConjunctionDB).order_by(ConjunctionDB.created_at.desc()).all()
+        from sqlalchemy.orm import aliased
+        PrimaryObj = aliased(ObjectDB)
+        SecondaryObj = aliased(ObjectDB)
+
+        records = self.db.query(
+            ConjunctionCandidateDB, PrimaryObj.catalog_id, SecondaryObj.catalog_id
+        ).outerjoin(
+            PrimaryObj, ConjunctionCandidateDB.primary_object_id == PrimaryObj.object_id
+        ).outerjoin(
+            SecondaryObj, ConjunctionCandidateDB.secondary_object_id == SecondaryObj.object_id
+        ).order_by(ConjunctionCandidateDB.created_at.desc()).all()
+
         result = []
-        for r in records:
+        for r, primary_catalog_id, secondary_catalog_id in records:
             result.append(ConjunctionCandidate(
                 conjunction_id=r.conjunction_id,
-                primary_object=r.satellite_id,
-                secondary_object=r.debris_id,
+                primary_object=primary_catalog_id or "",
+                secondary_object=secondary_catalog_id or "",
                 primary_object_name=r.primary_object_name,
                 secondary_object_name=r.secondary_object_name,
                 tca=r.tca,
                 closest_approach=ClosestApproach(
-                    distance_km=r.closest_approach_km,
-                    relative_velocity_km_s=r.relative_velocity_kms
+                    distance_km=r.miss_distance_km,
+                    relative_velocity_km_s=r.relative_velocity_km_s
                 ),
                 screening=ScreeningInfo(
                     threshold_km=r.screening_threshold_km,
