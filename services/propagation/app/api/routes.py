@@ -212,6 +212,8 @@ def list_conjunctions(db: Session = Depends(get_db)):
 @router.post("/demo/inject-synthetic", summary="Inject Synthetic Debris & Guarantee Conjunction for Demo")
 def inject_synthetic_demo(
     target_catalog_id: str = Query(default="25544", description="Target satellite catalog ID (e.g. ISS 25544)"),
+    tca_offset_minutes: Optional[float] = Query(default=None, description="Optional custom TCA offset in minutes"),
+    profile_index: Optional[int] = Query(default=None, description="Optional encounter geometry profile index (0-4)"),
     db: Session = Depends(get_db)
 ):
     repo = DatabaseRepository(db)
@@ -232,7 +234,11 @@ def inject_synthetic_demo(
         "tle_line_2": target.raw_tle_line2
     }
 
-    synth_item = generate_verified_synthetic_debris(target_data, tca_offset_minutes=45.0, target_separation_km=8.2)
+    synth_item = generate_verified_synthetic_debris(
+        target_data,
+        tca_offset_minutes=tca_offset_minutes,
+        profile_index=profile_index
+    )
 
     # Save synthetic debris to DB
     synth_db = repo.save_object(

@@ -43,14 +43,14 @@ def save_maneuver_candidates_to_db(candidates: ManeuverCandidates) -> bool:
         session = SessionLocal()
         try:
             for c in candidates.candidates:
+                db_id = f"{candidates.conjunction_id}_{c.maneuver_id}"
                 existing = session.query(ManeuverCandidateDB).filter(
-                    ManeuverCandidateDB.conjunction_id == candidates.conjunction_id,
-                    ManeuverCandidateDB.maneuver_id == c.maneuver_id
+                    ManeuverCandidateDB.maneuver_id == db_id
                 ).first()
                 if not existing:
                     record = ManeuverCandidateDB(
+                        maneuver_id=db_id,
                         conjunction_id=candidates.conjunction_id,
-                        maneuver_id=c.maneuver_id,
                         burn_direction=c.burn_direction,
                         delta_v_m_s=c.delta_v_m_s,
                         new_separation_km=c.new_separation_km,

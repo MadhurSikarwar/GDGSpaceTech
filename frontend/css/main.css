@@ -421,7 +421,9 @@ main {
 .sc-field span { font-family: var(--f-mono); font-size: 11px; color: var(--ink-0); }
 .sc-vec { font-family: var(--f-mono); font-size: 9.5px; color: var(--ink-1); background: var(--inset); padding: 6px 8px; border-radius: var(--radius); margin-top: 8px; line-height: 1.6; }
 
-.sc-explore-btn { width: 100%; justify-content: center; margin-top: 10px; }
+.sc-actions { display: flex; gap: 8px; margin-top: 10px; }
+.sc-actions .btn { flex: 1; justify-content: center; margin-top: 0; padding: 6px 8px; font-size: 10px; }
+.sc-explore-btn { width: 100%; justify-content: center; }
 .selection-card.exploring { width: 306px; animation: none; }
 
 .sc-explore { margin-top: 4px; }
