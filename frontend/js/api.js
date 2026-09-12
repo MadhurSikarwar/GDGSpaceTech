@@ -32,7 +32,7 @@ async function fetchJSON(url, opts = {}, timeoutMs = 5000) {
   }
 }
 
-export async function checkHealth(base, timeoutMs = 2500) {
+export async function checkHealth(base, timeoutMs = 4000) {
   try {
     await fetchJSON(`${base}/health`, {}, timeoutMs);
     return true;
@@ -92,7 +92,7 @@ export async function assessRisk(conj) {
     const data = await fetchJSON(
       `${BASES.risk}/assess-risk?conjunction_id=${encodeURIComponent(conj.conjunction_id)}`,
       { method: 'POST' },
-      3000
+      6000
     );
     return { data, live: true };
   } catch (err) {
@@ -105,7 +105,7 @@ export async function generateManeuvers(conj, satelliteId) {
     const data = await fetchJSON(
       `${BASES.maneuver}/generate-maneuvers?conjunction_id=${encodeURIComponent(conj.conjunction_id)}&satellite_id=${encodeURIComponent(satelliteId)}`,
       { method: 'POST' },
-      3000
+      6000
     );
     return { data, live: true };
   } catch (err) {
@@ -118,7 +118,7 @@ export async function optimizeDecision(conj, maneuverCandidates) {
     const data = await fetchJSON(
       `${BASES.optimizer}/optimize-decision?conjunction_id=${encodeURIComponent(conj.conjunction_id)}`,
       { method: 'POST' },
-      3000
+      6000
     );
     return { data, live: true };
   } catch (err) {

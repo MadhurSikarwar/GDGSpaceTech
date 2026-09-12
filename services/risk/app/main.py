@@ -11,10 +11,20 @@ from services.risk.app.database import (
     load_fixture_conjunctions
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="OrbitalGuard Risk Agent",
     version="1.0.0",
     description="Deterministic Conjunction Hazard Scoring and Risk Classification Service."
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

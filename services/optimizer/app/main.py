@@ -6,10 +6,20 @@ from shared.schemas.maneuver import ManeuverCandidates
 from shared.schemas.decision import ManeuverDecision, DecisionInfo, SimulationInfo
 from services.maneuver.app.main import get_cached_maneuvers, generate_maneuvers
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="OrbitalGuard Optimizer Agent",
     version="1.0.0",
     description="Selects optimal maneuver trade-off minimizing delta-V while mitigating conjunction risk."
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -100,6 +110,15 @@ def optimize_decision(
             )
         
         target_payload = get_cached_maneuvers(conjunction_id)
+        if target_payload is None:
+            try:
+                with httpx.Client(timeout=3.0) as client:
+                    resp = client.post(f"http://localhost:8002/generate-maneuvers?conjunction_id={conjunction_id}")
+                    if resp.status_code == 200:
+                        target_payload = ManeuverCandidates.model_validate(resp.json())
+            except Exception:
+                pass
+
         if target_payload is None:
             try:
                 target_payload = generate_maneuvers(conjunction_id=conjunction_id)
