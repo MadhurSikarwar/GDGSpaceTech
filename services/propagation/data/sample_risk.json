@@ -1,0 +1,17 @@
+[
+  {
+    "conjunction_id": "CONJ-20260912-001",
+    "risk_score": 87.5,
+    "risk_level": "HIGH",
+    "factors": {
+      "closest_approach_km": 7.68,
+      "time_to_tca_minutes": 44.6,
+      "relative_velocity_km_s": 10.42
+    },
+    "uncertainty": {
+      "model": "PROTOTYPE_FIXED_UNCERTAINTY",
+      "confidence": "MODERATE"
+    },
+    "notes": "High relative velocity close approach candidate detected within 45 minutes of TCA."
+  }
+]
