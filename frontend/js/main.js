@@ -604,38 +604,23 @@ async function handleInjectOnTarget(targetCatalogId) {
       const dist = newConj.closest_approach?.distance_km != null ? `${newConj.closest_approach.distance_km.toFixed(1)} km` : '';
       toast('CONJUNCTION DETECTED', `${targetName} × ${newConj.secondary_object_name || newConj.secondary_object} (${dist})`, 'crit');
 
-      // Cinematic reveal: freshly-injected debris is a "threat just appeared"
-      // moment, so fly straight into Explore Mode on it -- camera frames both
-      // objects, the rest of the catalog dims, and playback creeps toward
-      // TCA, exactly like clicking a real conjunction. This used to exit
-      // Explore Mode (if active) and jump straight to Pipeline with zero
-      // buildup, so the operator only ever saw the outcome, never the
-      // encounter itself.
       const freshTarget = findByCatalogId(targetCatalogId);
       if (freshTarget?.state) {
         const prevSelected = singleSelectedId;
         singleSelectedId = targetCatalogId;
         selectObject(targetCatalogId);
         if (prevSelected && prevSelected !== targetCatalogId && !conjunctionFocusIds.includes(prevSelected)) globe.unfocus(prevSelected);
-        renderSelectionCard(freshTarget); // populate name/badge/altitude/etc, not just the explore overlay
-        enterExplore(targetCatalogId, newConj.conjunction_id);
-        applyConjunctionToExplore(freshTarget, newConj);
-        setView('orbit');
-        fetchTrajectoryCached(targetCatalogId).then((traj) => {
-          if (singleSelectedId !== targetCatalogId) return;
-          const status = document.getElementById('scTrajStatus');
-          if (status) status.textContent = `Trajectory loaded — ${traj.trajectory.length} pts / ${traj.propagation_horizon_minutes} min`;
-        }).catch(() => {});
+        renderSelectionCard(freshTarget);
         const debrisId = newConj.primary_object === targetCatalogId ? newConj.secondary_object : newConj.primary_object;
-        globe.pulseArrival(debrisId); // hot flash on the object that just arrived
-      } else {
-        // No state vector to frame (shouldn't normally happen) -- fall back
-        // to the old behaviour rather than show a broken/empty 3D view.
-        setTimeout(() => {
-          setView('pipeline');
-          openConjunction(newConj.conjunction_id, true);
-        }, 600);
+        globe.pulseArrival(debrisId);
       }
+      
+      // The user requested to see the pipeline run options directly on the main page.
+      // Jump directly to the Pipeline view with the new conjunction loaded.
+      setTimeout(() => {
+        setView('pipeline');
+        openConjunction(newConj.conjunction_id, true);
+      }, 300);
     } else {
       toast('SYNTHETIC DEBRIS INJECTED', 'Check the Conjunctions tab.', 'warn');
     }

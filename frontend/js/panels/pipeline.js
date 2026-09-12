@@ -1,4 +1,4 @@
-import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction } from '../state.js';
+import { state, subscribe, setRisk, setManeuvers, setDecision, setApproval, setRejection, setSelectedManeuver, setMitigation, pushLog, setActiveConjunction } from '../state.js';
 import * as api from '../api.js';
 import { icons } from '../icons.js';
 import { escapeHtml, fmtKm, fmtNum, fmtRelVel, riskTierColorVar, clamp } from '../utils.js';
@@ -246,7 +246,8 @@ function renderBody(conjId) {
   const manEntry = state.maneuvers.get(conjId);
   const decEntry = state.decisions.get(conjId);
   const approval = state.approvals.get(conjId);
-  const selectedManeuverId = state.selectedManeuver.get(conjId);
+  const rejection = state.rejections.get(conjId);
+  const selectedManeuverId = state.selectedManeuver.get(conjId) || (decEntry?.data?.recommended_maneuver_id);
   const mitigation = state.mitigations.get(conjId);
 
   let html = `<div class="stage-cards">`;
@@ -254,7 +255,7 @@ function renderBody(conjId) {
   if (riskEntry) html += riskCard(riskEntry);
   if (manEntry) html += maneuverCard(manEntry, decEntry, selectedManeuverId, approval);
   if (decEntry) html += decisionCard(decEntry);
-  if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval);
+  if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval, rejection);
   if (approval) html += mitigationCard(conj, mitigation, manEntry, approval);
   html += `</div>`;
   body.innerHTML = html;
@@ -270,6 +271,7 @@ function renderBody(conjId) {
   const rejectBtn = body.querySelector('#rejectBtn');
   if (rejectBtn) rejectBtn.addEventListener('click', () => {
     pushLog(`Operator rejected the current maneuver plan for ${conjId}. Awaiting revised decision.`, 'warn');
+    setRejection(conjId);
     toast('MANEUVER REJECTED', 'Adjust the candidate selection or re-run the pipeline.', 'warn');
   });
 }
@@ -380,7 +382,7 @@ function decisionCard(decEntry) {
   </div>`;
 }
 
-function approvalGate(conj, manEntry, selectedId, approval) {
+function approvalGate(conj, manEntry, selectedId, approval, rejection) {
   if (approval) {
     const m = manEntry.data.candidates.find((c) => c.maneuver_id === approval.maneuverId);
     return `
@@ -393,6 +395,18 @@ function approvalGate(conj, manEntry, selectedId, approval) {
     </div>`;
   }
   const selected = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
+  
+  if (rejection) {
+    return `
+    <div class="stage-card">
+      <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL</span></div>
+      <div class="approved-banner" style="background: var(--flame-dim); color: var(--flame); border-color: var(--flame-dim);">
+        ${icons.close}
+        <div>Maneuver <b>${escapeHtml(selected?.maneuver_id)}</b> was rejected by the operator. Please select a different candidate from the Maneuver stage above.</div>
+      </div>
+    </div>`;
+  }
+
   return `
   <div class="stage-card">
     <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL GATE</span></div>
