@@ -417,3 +417,25 @@ def test_fastapi_agent_decide_endpoint(monkeypatch):
     assert decision["conjunction_id"] == "CONJ-TEST-API"
     assert decision["decision"]["recommended_maneuver_id"] == "M1"
     assert decision["human_approval_required"] is True
+
+
+def test_agent_activity_endpoint():
+    client = TestClient(optimizer_app)
+    # First ensure a run happens to populate active_contexts
+    payload = {
+        'conjunction_id': 'TEST-ACT-001',
+        'primary_object': '99999',
+        'candidates': []
+    }
+    client.post('/agent/decide?conjunction_id=TEST-ACT-001', json=payload)
+    
+    response = client.get('/agent/activity/TEST-ACT-001')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['conjunction_id'] == 'TEST-ACT-001'
+    assert 'tool_history' in data
+    assert 'workflow_state' in data
+    
+    # Check 404/None behavior
+    response = client.get('/agent/activity/DOES-NOT-EXIST')
+    assert response.json() is None
