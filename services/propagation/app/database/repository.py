@@ -8,10 +8,19 @@ from services.propagation.app.database.models import Base, ObjectDB, Conjunction
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
 
 
-# Connect to DB engine
-connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(settings.DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Connect to DB engine with automatic SQLite fallback
+try:
+    connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+    engine = create_engine(settings.DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+    # Test connection
+    with engine.connect() as conn:
+        pass
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+except Exception:
+    # Graceful fallback to local SQLite
+    sqlite_url = "sqlite:///./orbitalguard.db"
+    engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():

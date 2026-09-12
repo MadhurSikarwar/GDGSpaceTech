@@ -1,3 +1,1 @@
-"""
-Tests package for OrbitalGuard Tracking & Screening Service
-"""
+# Propagation test suite package

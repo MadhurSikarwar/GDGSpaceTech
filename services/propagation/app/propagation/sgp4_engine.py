@@ -34,14 +34,9 @@ class SGP4PropagationEngine:
         pos_km = geocentric.position.km
         vel_km_s = geocentric.velocity.km_per_s
 
-        # Calculate geodetic altitude using Skyfield wgs84 or WGS84 ellipsoid radius calculation
-        try:
-            subpoint = wgs84.subpoint(geocentric)
-            alt_km = float(subpoint.elevation.km)
-        except Exception:
-            # Fallback to WGS84 mean radius subtraction
-            r_mag = math.sqrt(pos_km[0]**2 + pos_km[1]**2 + pos_km[2]**2)
-            alt_km = r_mag - 6378.137
+        # Fast geometric altitude calculation (km)
+        r_mag = math.sqrt(pos_km[0]**2 + pos_km[1]**2 + pos_km[2]**2)
+        alt_km = r_mag - 6378.137
 
         state_vector = StateVector(
             timestamp=target_dt,

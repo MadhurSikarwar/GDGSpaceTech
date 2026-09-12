@@ -355,39 +355,175 @@ Below are copy-pasteable context blocks tailored for each teammate to initialize
 
 ---
 
-### ### BLOCK 1 — RISK AGENT
 
-```markdown
+### BLOCK 1 — RISK AGENT
+
 You are assisting with the Risk Agent module for OrbitalGuard — Autonomous Orbital Traffic Intelligence.
 
 GitHub Repository: https://github.com/MadhurSikarwar/GDGSpaceTech
+
 Active Baseline Branch: main
 
 FIRST STEPS:
+
 1. Inspect the repository on disk.
-2. Read INTEGRATION_CONTRACT.md for system architecture, units, and API specifications.
+
+2. Read INTEGRATION_CONTRACT.md for system architecture, units, shared contracts, and API specifications.
+
 3. Inspect shared/schemas/ (specifically conjunction.py and risk.py).
+
 4. Inspect your assigned module directory: services/risk/.
 
+5. Inspect the project's Supabase/database configuration and determine how the shared database is currently structured. Do not assume table names or columns before inspecting the repository.
+
 YOUR SCOPE & RESPONSIBILITIES:
+
 - You own services/risk/. Do NOT modify services/propagation/, services/maneuver/, services/optimizer/, or frontend/.
-- You consume ConjunctionCandidate contract objects produced by the Screening Agent (available via GET http://localhost:8000/api/v1/conjunctions or mock fixture services/propagation/data/sample_conjunctions.json).
+
+- You consume valid ConjunctionCandidate contract objects produced by the Screening Agent.
+
+- Conjunction data may be obtained from:
+  - GET http://localhost:8000/api/v1/conjunctions
+  - the mock fixture services/propagation/data/sample_conjunctions.json
+  - the shared Supabase database, if the database integration is already available.
+
 - You must produce a valid RiskAssessment Pydantic object matching shared/schemas/risk.py.
-- Calculate time_to_tca_minutes = (tca - now).total_seconds() / 60.0.
-- Compute a risk_score (0-100) and assign risk_level ("CRITICAL", "HIGH", "MEDIUM", "LOW").
-- Expose a FastAPI endpoint in services/risk/app/main.py.
+
+- Calculate:
+  time_to_tca_minutes = (tca - now).total_seconds() / 60.0
+
+- Compute a deterministic risk_score from 0–100 using the available conjunction information, including relevant factors such as:
+  - minimum separation distance
+  - time to TCA
+  - relative velocity
+  - data quality/availability where applicable
+
+- Assign risk_level as one of:
+  - "CRITICAL"
+  - "HIGH"
+  - "MEDIUM"
+  - "LOW"
+
+- Expose a FastAPI endpoint in services/risk/app/main.py for risk assessment.
+
+- Persist valid RiskAssessment results to Supabase when database integration is available and configured.
+
+- The Risk Agent must remain usable without Supabase for local development/testing when practical. Do not make the entire Risk Agent dependent on Supabase if the existing architecture supports API/fixture-based operation.
+
+SUPABASE / DATABASE REQUIREMENTS:
+
+- Supabase is the project's shared persistence layer.
+
+- Before implementing database access, inspect the existing database configuration, schema, environment configuration, and repository documentation.
+
+- Use environment variables for Supabase credentials.
+
+- Never hard-code Supabase credentials, API keys, passwords, or secrets.
+
+- Never commit .env or real credentials to Git.
+
+- Use .env.example only for placeholder variable names.
+
+- Do not create duplicate or conflicting database schemas without first checking the existing project structure.
+
+- Do not change shared Pydantic schemas merely to make them fit the database. Map database records to the existing shared contracts.
+
+- RiskAssessment data written to Supabase must preserve the units and timestamp conventions defined by INTEGRATION_CONTRACT.md.
+
+- Database failures should be handled explicitly and should not silently produce invalid RiskAssessment objects.
 
 CONVENTIONS & CONSTRAINTS:
-- Use timezone-aware UTC ISO-8601 timestamps.
-- Separation distance is in km, relative velocity in km/s.
+
+- Use timezone-aware UTC timestamps.
+
+- Use ISO-8601 timestamps.
+
+- Separation distance is in km.
+
+- Relative velocity is in km/s.
+
+- Delta-v is in m/s where applicable.
+
+- Risk score must remain within 0–100.
+
+- Risk classification must be deterministic and explainable.
+
+- Do NOT claim that the risk score is a physical Probability of Collision (Pc).
+
+- A conjunction candidate is not automatically a collision.
+
 - Do NOT change shared schema definitions without coordination.
-- Run tests (python -m pytest tests/) to verify contract compatibility before proposing changes.
 
-Begin by inspecting the repository, reading INTEGRATION_CONTRACT.md, and explaining your proposed Risk Agent implementation.
-```
+- Do NOT modify another agent's implementation.
 
----
+- Keep the Risk Agent implementation focused on hazard scoring and risk classification. Maneuver generation belongs to the Maneuver Agent, and final maneuver selection belongs to the Optimizer/Decision Agent.
 
+API / CONTRACT REQUIREMENTS:
+
+The Risk Agent should accept ConjunctionCandidate data and return RiskAssessment data that conforms exactly to the shared contract.
+
+The implementation should support a flow similar to:
+
+ConjunctionCandidate
+        ↓
+     Risk Agent
+        ↓
+RiskAssessment
+        ↓
+    Supabase
+
+The Risk Agent must not invent missing orbital data. If required fields are unavailable, handle the condition explicitly according to the existing schemas/contracts.
+
+TESTING:
+
+- Inspect existing tests before writing new ones.
+
+- Add focused tests for:
+  - risk score calculation
+  - risk level classification
+  - time_to_tca_minutes calculation
+  - valid RiskAssessment schema output
+  - timezone-aware timestamps
+  - edge cases such as very small separation and large separation
+  - Supabase/database behavior where practical
+  - graceful behavior when Supabase is unavailable or not configured
+
+- Run:
+
+  python -m pytest tests/
+
+- Also run any Risk Agent-specific tests required by the repository.
+
+- Verify that your implementation does not break the existing Tracking + Screening tests or shared integration contracts.
+
+IMPLEMENTATION PRINCIPLES:
+
+- Prefer a simple, deterministic, explainable scoring model suitable for a 24-hour hackathon.
+
+- Keep scoring logic separate from the FastAPI route so it can be tested independently.
+
+- Keep Supabase/database access separate from the core risk calculation logic.
+
+- Do not over-engineer the Risk Agent with machine learning unless the repository explicitly requires it.
+
+- Do not introduce unnecessary dependencies.
+
+- Do not modify the shared contracts just to simplify implementation.
+
+BEGIN:
+
+First inspect the repository, read INTEGRATION_CONTRACT.md, inspect shared/schemas/conjunction.py and shared/schemas/risk.py, inspect services/risk/, and inspect the Supabase/database configuration.
+
+Then explain:
+
+1. What data the Risk Agent receives.
+2. What RiskAssessment it must produce.
+3. How the risk score will be calculated.
+4. How risk levels will be assigned.
+5. How Supabase fits into the Risk Agent.
+6. What files you intend to create or modify.
+
+Do not start making broad architectural changes before explaining the proposed implementation.
 ### ### BLOCK 2 — MANEUVER AGENT
 
 ```markdown
