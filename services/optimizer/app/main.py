@@ -106,7 +106,7 @@ class FeedbackRequest(BaseModel):
     status: str
     reason: Optional[str] = None
 
-@app.post("/agent/feedback", response_model=DecisionContext)
+@app.post("/agent/feedback", response_model=ManeuverDecision)
 def agent_feedback(request: FeedbackRequest):
     """
     Submit human approval or rejection for a maneuver candidate.
@@ -129,20 +129,17 @@ def agent_feedback(request: FeedbackRequest):
     # Re-evaluate automatically on rejection
     if request.status.upper() == "REJECTED":
         context = _orchestrator.run(conjunction_id=request.conjunction_id)
-        
+        decision = _orchestrator.to_maneuver_decision(context)
         save_maneuver_decision_to_db(
             conjunction_id=context.conjunction_id,
             optimal_candidate=context.selected_candidate,
-            reason=context.explanation or "Decision completed.",
-            approval_status=context.approval_status,
+            reason=decision.decision.reason,
+            approval_status=decision.simulation.status,
         )
-        return context
+        return decision
     
-    # If approved, just fetch or return something dummy, or just run the orchestrator once to get the context
-    # Usually returning the current state or updating the DB is enough.
-    # To keep it simple, we just return the final state of the orchestrator.
     context = _orchestrator.run(conjunction_id=request.conjunction_id)
-    return context
+    return _orchestrator.to_maneuver_decision(context)
 
 
 @app.post("/optimize-decision", response_model=ManeuverDecision)

@@ -1408,6 +1408,7 @@ export function initGlobe(canvas) {
     setGroundStations(stations) { setGroundStations(stations); },
     setGroundStationsVisible(visible) { groundStationGroup.visible = visible; },
     setStationActive(stationId, active) { setStationActive(stationId, active); },
+    clearStationActive() { clearStationActive(); },
     setLandingMode(isActive) {
       cam.targetOffsetY = isActive ? 1.6 : 0;
       cam.targetRadius = isActive ? 5.0 : DEFAULT_CAM.radius;

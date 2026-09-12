@@ -167,7 +167,7 @@ def _generate_optimizer_candidates(candidate: ConjunctionCandidate) -> Optional[
         dv_ric = result.x * scale
         pc = predicted_pc_for_delta_v(dv_ric, inputs, time_to_tca_s)
         new_separation_km = shifted_miss_distance_km(dv_ric, inputs, time_to_tca_s)
-        risk_tier = classify_risk_level(risk_score=0.0, distance_km=0.0, time_to_tca_minutes=0.0, probability_of_collision=pc)
+        risk_tier = classify_risk_level(risk_score=0.0, distance_km=new_separation_km, time_to_tca_minutes=time_to_tca_s / 60.0, probability_of_collision=pc)
         dv_m_s = dv_ric * 1000.0
         out.append(ManeuverCandidate(
             maneuver_id=f"OPT{i}",
@@ -234,17 +234,11 @@ def generate_maneuvers(
         target_satellite_id = candidate.primary_object
         target_assessment = assess_conjunction_risk(candidate)
 
-    # Gate: prefer Pc (the whole point of replacing miss-distance-only
-    # alerting) when available; fall back to the risk-tier heuristic when
-    # it isn't (e.g. a bare RiskAssessment body with no Pc field).
-    #
-    # Trigger at PC_TIER_HIGH (1e-5), not PC_CRITICAL_THRESHOLD (1e-4): the
-    # risk card already classifies anything >= 1e-5 as HIGH or worse, so
-    # gating the maneuver planner on the tighter 1e-4 line let a HIGH-tier
-    # Pc (e.g. 4e-5) fall through as "no maneuver required" right below a
-    # risk assessment that says HIGH -- a direct contradiction on screen.
-    pc = target_assessment.collision_probability
-    needs_maneuver = (pc >= PC_TIER_HIGH) if pc is not None else (target_assessment.risk_level != "LOW")
+    # Gate maneuver planning strictly based on the resolved risk tier.
+    # This guarantees that if the Risk Agent determines the encounter is HIGH or CRITICAL 
+    # (whether driven by Pc or heuristics), the Maneuver Agent will consistently
+    # generate avoidance options, preventing any UX contradiction on screen.
+    needs_maneuver = target_assessment.risk_level in ["HIGH", "CRITICAL"]
     if not needs_maneuver:
         result = ManeuverCandidates(
             conjunction_id=target_assessment.conjunction_id,

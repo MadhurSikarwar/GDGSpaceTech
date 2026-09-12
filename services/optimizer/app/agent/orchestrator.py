@@ -424,15 +424,20 @@ class DecisionAgentOrchestrator:
 
             all_candidates = context.maneuver_candidates.candidates
             rejected_maneuver_ids = {fb["maneuver_id"] for fb in context.historical_feedback if fb["status"] == "REJECTED" and fb["maneuver_id"]}
-            feasible_candidates = [
+            
+            physically_feasible_candidates = [
                 c for c in all_candidates
                 if context.constraint_evaluations.get(c.maneuver_id)
                 and context.constraint_evaluations[c.maneuver_id].is_feasible
-                and c.maneuver_id not in rejected_maneuver_ids
+            ]
+            
+            feasible_candidates = [
+                c for c in physically_feasible_candidates
+                if c.maneuver_id not in rejected_maneuver_ids
             ]
 
-            # Case A: No feasible candidates
-            if not feasible_candidates:
+            # Case A: No physically feasible candidates at all
+            if not physically_feasible_candidates:
                 context.selected_maneuver_id = "NO_FEASIBLE_MANEUVER"
                 context.status = "NO_FEASIBLE_MANEUVER"
                 context.failure_state = CandidateFailureReason.NO_FEASIBLE_MANEUVER.value
@@ -446,26 +451,27 @@ class DecisionAgentOrchestrator:
                 return
 
             # Case B: Feasible candidates exist
-            # Verify LLM's proposed candidate is actually feasible
+            # Verify LLM's proposed candidate is actually physically feasible
             chosen = None
             if proposed_candidate_id and proposed_candidate_id not in ("NONE", "NO_FEASIBLE_MANEUVER"):
                 chosen = next(
-                    (c for c in feasible_candidates if c.maneuver_id == proposed_candidate_id),
+                    (c for c in physically_feasible_candidates if c.maneuver_id == proposed_candidate_id),
                     None,
                 )
                 if not chosen:
                     logger.warning(
-                        f"LLM proposed candidate '{proposed_candidate_id}' is NOT feasible or does not exist. "
+                        f"LLM proposed candidate '{proposed_candidate_id}' is NOT physically feasible or does not exist. "
                         "Overriding with authoritative deterministic minimum delta-V solution."
                     )
 
             # Authoritative deterministic selection: prefer LOW resulting_risk, minimum delta-V
             if not chosen:
-                low_risk_viable = [c for c in feasible_candidates if c.resulting_risk == "LOW"]
+                pool = feasible_candidates if feasible_candidates else physically_feasible_candidates
+                low_risk_viable = [c for c in pool if c.resulting_risk == "LOW"]
                 if low_risk_viable:
                     chosen = min(low_risk_viable, key=lambda c: c.delta_v_m_s)
                 else:
-                    chosen = min(feasible_candidates, key=lambda c: c.delta_v_m_s)
+                    chosen = min(pool, key=lambda c: c.delta_v_m_s)
 
             context.selected_candidate = chosen
             context.selected_maneuver_id = chosen.maneuver_id
@@ -489,11 +495,21 @@ class DecisionAgentOrchestrator:
                 f"providing {chosen.new_separation_km:.1f} km post-burn separation ({pc_str}) {drift_str}. "
                 f"All physical and slot retention constraints are verified satisfied. Escalated for human approval."
             )
-            context.explanation = (
-                proposed_explanation
-                if (proposed_explanation and chosen.maneuver_id in proposed_explanation)
-                else default_explanation
-            )
+            
+            # If the LLM didn't provide a valid explanation, use the default
+            final_explanation = proposed_explanation if proposed_explanation else default_explanation
+            
+            # Explicitly append/prepend notice if we are forced to retain a rejected option
+            if chosen.maneuver_id in rejected_maneuver_ids:
+                rejection_note = (
+                    f"[NOTE: Retaining {chosen.maneuver_id}] Unable to satisfy rejection criteria "
+                    f"because the physics engine did not generate any safer or further options. "
+                    f"This remains the best available option ({chosen.new_separation_km:.1f} km). "
+                )
+                if not proposed_explanation or "Unable to satisfy" not in proposed_explanation:
+                    final_explanation = rejection_note + final_explanation
+
+            context.explanation = final_explanation
         else:
             # No candidates available
             context.selected_maneuver_id = "NONE"

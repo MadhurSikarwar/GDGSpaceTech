@@ -266,6 +266,8 @@ class ToolRegistry:
         # Request maneuver generation from Maneuver Agent via HTTP
         with httpx.Client(timeout=30.0) as client:
             params = {}
+            if not conjunction_id and candidate:
+                conjunction_id = candidate.conjunction_id
             if conjunction_id:
                 params["conjunction_id"] = conjunction_id
             if satellite_id:
