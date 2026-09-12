@@ -297,7 +297,6 @@ def inject_synthetic_demo(
         raw_data=synth_item.get("raw_data")
     )
 
-<<<<<<< HEAD
     # Screen ONLY the injected object against its intended target, not the
     # whole catalog. This used to call run_screening_pipeline() -- the same
     # handler behind POST /screen -- which pulls every tracked object
@@ -340,16 +339,6 @@ def inject_synthetic_demo(
 
     for c in conjunctions:
         repo.save_conjunction(c)
-=======
-    # Target conjunction screening specifically between target satellite and synthetic debris
-    fine_filter = FineFilter(threshold_km=50.0)
-    candidate = fine_filter.compute_conjunction_candidate(target_data, synth_item, horizon_minutes=90)
-
-    conjunctions = []
-    if candidate:
-        repo.save_conjunction(candidate)
-        conjunctions.append(candidate)
->>>>>>> origin/model-1
 
     return {
         "message": f"Successfully injected synthetic object {synth_item['name']}.",
