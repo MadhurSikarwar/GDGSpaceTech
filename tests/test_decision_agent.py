@@ -345,9 +345,25 @@ def test_no_feasible_maneuver_explicit_state(test_conjunction):
 
 def test_llm_failure_produces_graceful_fallback(test_conjunction):
     # LLM always returns None (simulating timeout, bad key, or network error)
+    candidates = ManeuverCandidates(
+        conjunction_id=test_conjunction.conjunction_id,
+        primary_object=test_conjunction.primary_object,
+        candidates=[
+            ManeuverCandidate(
+                maneuver_id="M_FEASIBLE",
+                delta_v_m_s=1.2,
+                burn_direction="POSIGRADE",
+                new_separation_km=25.0,
+                resulting_risk="LOW",
+                predicted_pc=2e-6,
+            )
+        ]
+    )
+
     orchestrator = DecisionAgentOrchestrator()
     context = orchestrator.run(
         candidate_payload=test_conjunction,
+        preloaded_candidates=candidates,
         llm_override=lambda c, t, h: None,
     )
 

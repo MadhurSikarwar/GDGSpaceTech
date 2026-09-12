@@ -103,6 +103,7 @@ class DecisionContext(BaseModel):
     # Human approval gate
     human_approval_required: bool = True
     approval_status: str = Field(default="PENDING")
+    historical_feedback: List[Dict[str, Any]] = Field(default_factory=list, description="Historical human approval/rejection feedback for candidates associated with this conjunction.")
     
     # Final verified natural language justification
     explanation: Optional[str] = None

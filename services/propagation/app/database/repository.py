@@ -5,7 +5,7 @@ from typing import List, Optional
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 from services.propagation.app.config import settings
-from services.propagation.app.database.models import Base, ObjectDB, ConjunctionCandidateDB, HistoricalTLEDB
+from services.propagation.app.database.models import Base, ObjectDB, ConjunctionCandidateDB, HistoricalTLEDB, DecisionFeedbackDB
 from services.propagation.app.realtime.connection_manager import manager as ws_manager
 from shared.schemas.conjunction import ConjunctionCandidate, ClosestApproach, ScreeningInfo, DataProvenance
 
@@ -258,3 +258,20 @@ class DatabaseRepository:
                 combined_hard_body_radius_m=r.combined_hard_body_radius_m
             ))
         return result
+
+    def save_decision_feedback(self, conjunction_id: str, status: str, maneuver_id: Optional[str] = None, reason: Optional[str] = None) -> DecisionFeedbackDB:
+        feedback = DecisionFeedbackDB(
+            conjunction_id=conjunction_id,
+            maneuver_id=maneuver_id,
+            status=status,
+            reason=reason
+        )
+        self.db.add(feedback)
+        self.db.commit()
+        self.db.refresh(feedback)
+        return feedback
+        
+    def get_decision_feedback_for_conjunction(self, conjunction_id: str) -> List[DecisionFeedbackDB]:
+        return self.db.query(DecisionFeedbackDB).filter(
+            DecisionFeedbackDB.conjunction_id == conjunction_id
+        ).order_by(DecisionFeedbackDB.timestamp.asc()).all()

@@ -12,13 +12,14 @@ from shared.tools import (
     propagate_trajectory,
     compute_pc,
     run_screening,
-    assess_risk,
-    generate_maneuver_candidates,
     evaluate_maneuver_constraints,
     check_ground_station_visibility,
     get_space_weather,
     ToolError,
 )
+import httpx
+from shared.schemas.risk import RiskAssessment
+from shared.schemas.maneuver import ManeuverCandidates
 from services.optimizer.app.agent.state import DecisionContext, ToolCallRecord
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,7 @@ class ToolRegistry:
                 },
                 "required": ["conjunction_id"]
             },
-            func=assess_risk
+            func=self._assess_risk_http
         )
 
         # 6. generate_maneuver_candidates
@@ -125,7 +126,7 @@ class ToolRegistry:
                 },
                 "required": ["conjunction_id"]
             },
-            func=generate_maneuver_candidates
+            func=self._generate_maneuvers_http
         )
 
         # 7. evaluate_maneuver_constraints
@@ -195,13 +196,14 @@ class ToolRegistry:
 
         func = self._tools[name]
         try:
-            # Inject context helpers if needed by wrapper
             if name == "evaluate_maneuver_constraints":
                 res = func(args=args, context=context)
             elif name == "assess_risk" and "candidate" not in args and context.conjunction_candidate and args.get("conjunction_id") == context.conjunction_id:
+                # HTTP wrapper expects the payload candidate and the args
                 filtered_args = {k: v for k, v in args.items() if k != "conjunction_id"}
                 res = func(candidate=context.conjunction_candidate, **filtered_args)
             elif name == "generate_maneuver_candidates" and "candidate" not in args and context.conjunction_candidate and args.get("conjunction_id") == context.conjunction_id:
+                # HTTP wrapper expects the payload candidate and the args
                 filtered_args = {k: v for k, v in args.items() if k != "conjunction_id"}
                 res = func(candidate=context.conjunction_candidate, **filtered_args)
             else:
@@ -249,6 +251,30 @@ class ToolRegistry:
             context.constraint_evaluations[c.maneuver_id] = ev
 
         return evaluations
+
+    def _assess_risk_http(self, candidate=None, conjunction_id=None) -> RiskAssessment:
+        # Request risk assessment from Risk Agent via HTTP
+        with httpx.Client(timeout=10.0) as client:
+            if candidate:
+                resp = client.post("http://localhost:8001/assess-risk", json=candidate.model_dump(mode="json"))
+            else:
+                resp = client.post(f"http://localhost:8001/assess-risk?conjunction_id={conjunction_id}")
+            resp.raise_for_status()
+            return RiskAssessment.model_validate(resp.json())
+
+    def _generate_maneuvers_http(self, candidate=None, conjunction_id=None, satellite_id=None) -> ManeuverCandidates:
+        # Request maneuver generation from Maneuver Agent via HTTP
+        with httpx.Client(timeout=30.0) as client:
+            params = {}
+            if conjunction_id:
+                params["conjunction_id"] = conjunction_id
+            if satellite_id:
+                params["satellite_id"] = satellite_id
+            
+            # If we don't have a direct risk assessment body, Maneuver agent will fetch by conjunction_id
+            resp = client.post("http://localhost:8002/generate-maneuvers", params=params)
+            resp.raise_for_status()
+            return ManeuverCandidates.model_validate(resp.json())
 
     def _summarize_and_integrate(self, name: str, result: Any, context: DecisionContext) -> str:
         """Deterministically assimilate tool output into DecisionContext."""

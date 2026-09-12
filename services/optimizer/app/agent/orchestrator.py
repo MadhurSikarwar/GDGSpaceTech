@@ -84,6 +84,15 @@ class DecisionAgentOrchestrator:
                 primary_id = conjunction.primary_object
                 secondary_id = conjunction.secondary_object
 
+        from services.propagation.app.database.repository import DatabaseRepository, SessionLocal
+        session = SessionLocal()
+        try:
+            repo = DatabaseRepository(session)
+            db_feedbacks = repo.get_decision_feedback_for_conjunction(cid)
+            historical_feedback = [{"maneuver_id": f.maneuver_id, "status": f.status, "reason": f.reason} for f in db_feedbacks]
+        finally:
+            session.close()
+
         context = DecisionContext(
             conjunction_id=cid,
             primary_object_id=primary_id,
@@ -93,6 +102,7 @@ class DecisionAgentOrchestrator:
             status="ANALYZING",
             max_iterations=self.max_iterations,
             max_maneuver_retries=self.max_maneuver_retries,
+            historical_feedback=historical_feedback,
         )
 
         # Fast-path: If preloaded candidates list is explicitly empty AND no conjunction
@@ -336,6 +346,11 @@ class DecisionAgentOrchestrator:
         else:
             lines.append("Constraint Evaluations: NOT YET EVALUATED")
 
+        if context.historical_feedback:
+            lines.append("Historical Human Feedback:")
+            for fb in context.historical_feedback:
+                lines.append(f"  - Maneuver {fb['maneuver_id']} was {fb['status']} (Reason: {fb['reason']})")
+
         # Phase 3: Append workflow state hint
         lines.append("")
         lines.append(workflow.build_workflow_context_hint(context))
@@ -404,10 +419,12 @@ class DecisionAgentOrchestrator:
                 self._sync_constraint_evaluations_to_workflow(context, workflow)
 
             all_candidates = context.maneuver_candidates.candidates
+            rejected_maneuver_ids = {fb["maneuver_id"] for fb in context.historical_feedback if fb["status"] == "REJECTED" and fb["maneuver_id"]}
             feasible_candidates = [
                 c for c in all_candidates
                 if context.constraint_evaluations.get(c.maneuver_id)
                 and context.constraint_evaluations[c.maneuver_id].is_feasible
+                and c.maneuver_id not in rejected_maneuver_ids
             ]
 
             # Case A: No feasible candidates

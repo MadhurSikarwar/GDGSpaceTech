@@ -90,6 +90,53 @@ def agent_decide(
     return context
 
 
+from pydantic import BaseModel
+
+class FeedbackRequest(BaseModel):
+    conjunction_id: str
+    maneuver_id: Optional[str] = None
+    status: str
+    reason: Optional[str] = None
+
+@app.post("/agent/feedback", response_model=DecisionContext)
+def agent_feedback(request: FeedbackRequest):
+    """
+    Submit human approval or rejection for a maneuver candidate.
+    If rejected, the agent will reconsider and generate a new recommendation.
+    """
+    from services.propagation.app.database.repository import DatabaseRepository, SessionLocal
+    
+    session = SessionLocal()
+    try:
+        repo = DatabaseRepository(session)
+        repo.save_decision_feedback(
+            conjunction_id=request.conjunction_id,
+            maneuver_id=request.maneuver_id,
+            status=request.status,
+            reason=request.reason
+        )
+    finally:
+        session.close()
+
+    # Re-evaluate automatically on rejection
+    if request.status.upper() == "REJECTED":
+        context = _orchestrator.run(conjunction_id=request.conjunction_id)
+        
+        save_maneuver_decision_to_db(
+            conjunction_id=context.conjunction_id,
+            optimal_candidate=context.selected_candidate,
+            reason=context.explanation or "Decision completed.",
+            approval_status=context.approval_status,
+        )
+        return context
+    
+    # If approved, just fetch or return something dummy, or just run the orchestrator once to get the context
+    # Usually returning the current state or updating the DB is enough.
+    # To keep it simple, we just return the final state of the orchestrator.
+    context = _orchestrator.run(conjunction_id=request.conjunction_id)
+    return context
+
+
 @app.post("/optimize-decision", response_model=ManeuverDecision)
 def optimize_decision(
     candidates_payload: Optional[ManeuverCandidates] = Body(None, description="Direct ManeuverCandidates payload"),

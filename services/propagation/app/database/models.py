@@ -93,3 +93,14 @@ class HistoricalTLEDB(Base):
     raw_tle = Column(Text, nullable=False)
     source = Column(String(64), default="CelesTrak")
     timestamp = Column(DateTime(timezone=True), default=get_utc_now)
+
+
+class DecisionFeedbackDB(Base):
+    __tablename__ = "decision_feedback"
+    
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conjunction_id = Column(String(128), index=True, nullable=False)
+    maneuver_id = Column(String(64), nullable=True)
+    status = Column(String(32), nullable=False)  # APPROVED / REJECTED
+    reason = Column(Text, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=get_utc_now)
