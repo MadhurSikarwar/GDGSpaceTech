@@ -17,6 +17,13 @@
 </div>
 
 ---
+## 🎥 Demo Video
+
+Watch the complete OrbitalGuard demo showcasing the platform's orbital tracking, conjunction detection, risk assessment, maneuver optimization, agentic decision pipeline, and human-in-the-loop approval.
+
+▶️ **[Watch the OrbitalGuard Demo](https://www.youtube.com/watch?v=Be4tBh7HUjg)**
+
+---
 
 ## 📌 Executive Summary
 
