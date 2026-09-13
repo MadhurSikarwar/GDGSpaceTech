@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>OrbitalGuard — Mission Console</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-<link rel="stylesheet" href="./css/main.css" />
+<link rel="stylesheet" href="./css/main.css?v=1.4" />
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.css" />
 <script src="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.js.iife.js"></script>
 <script type="importmap">
@@ -75,6 +75,12 @@
     </nav>
 
     <div class="topbar-spacer"></div>
+
+    <div class="topbar-utility-group">
+      <button class="btn btn-ghost btn-icon tour-toggle" id="tourToggleBtn" title="Guided tour"><span id="tourToggleIcon"></span></button>
+      <button class="btn btn-ghost btn-icon glossary-toggle" id="glossaryToggle" title="Glossary"><span id="glossaryToggleIcon"></span></button>
+      <button class="btn btn-ghost btn-icon log-toggle" id="logToggle" title="Activity log"><span id="logToggleIcon"></span></button>
+    </div>
 
     <div class="service-strip" id="serviceStrip"></div>
     <div class="spaceweather-badge" id="spaceWeatherBadge" title="Loading space weather…"></div>
@@ -238,12 +244,6 @@
     </section>
 
   </main>
-</div>
-
-<div class="hud-dock">
-  <button class="btn btn-ghost btn-sm tour-toggle" id="tourToggleBtn"><span id="tourToggleIcon"></span> TOUR</button>
-  <button class="btn btn-ghost btn-sm glossary-toggle" id="glossaryToggle"><span id="glossaryToggleIcon"></span> GLOSSARY</button>
-  <button class="btn btn-ghost btn-sm log-toggle" id="logToggle"><span id="logToggleIcon"></span> LOG</button>
 </div>
 
 <div class="glossary-drawer" id="glossaryDrawer">
