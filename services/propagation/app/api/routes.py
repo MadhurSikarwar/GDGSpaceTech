@@ -154,17 +154,28 @@ def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
 #
 # Keyed on DatabaseRepository's write counter rather than a plain TTL alone,
 # so a fresh ingest/inject is *never* masked by a stale cache entry -- the
-# very next read always sees it. The TTL on top just bounds how long a state
-# snapshot can be served without a write happening (position drifts a few km
-# over a few seconds for LEO objects, which is already within the noise of
-# "current state" for a dashboard, not a precision propagation).
+# very next read always sees it (get_objects_version() bumps on every write,
+# invalidating this regardless of TTL). The TTL on top just bounds how long
+# a state snapshot can be served without a write happening (position drifts
+# a few km over tens of seconds for LEO objects, which is already within
+# the noise of "current state" for a dashboard, not a precision propagation).
+#
+# 4s was needlessly short for the actual cost here: full-catalog SGP4
+# propagation at 16k+ live objects is genuinely CPU-heavy (each object gets
+# its own SGP4PropagationEngine construction + a real propagate_state call),
+# and at 4s almost every distinct page load/reload during normal use misses
+# the cache and re-pays that full cost from scratch, regardless of whether
+# anything actually changed. 60s means only the *first* fetch after a real
+# write is expensive; everything else in that window is instant, with zero
+# change to what data is ultimately served (still invalidates immediately
+# on any write, still every live object, nothing truncated).
 #
 # Keyed by (object_type, limit, offset) so different pages/filters don't
 # collide. This process runs as one worker (see .claude/launch.json), so a
 # plain module-level dict is enough; a benign race between two concurrent
 # requests recomputing at once just means one extra recompute, never
 # corrupted data (each entry is replaced atomically, never mutated in place).
-_OBJECTS_CACHE_TTL_SECONDS = 4.0
+_OBJECTS_CACHE_TTL_SECONDS = 60.0
 _objects_cache: Dict[tuple, Dict[str, Any]] = {}
 
 
