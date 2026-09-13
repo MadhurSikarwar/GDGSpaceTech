@@ -64,7 +64,10 @@ def test_inject_synthetic_demo_and_conjunctions():
     res_inject = client.post("/api/v1/demo/inject-synthetic?target_catalog_id=25544")
     assert res_inject.status_code == 200
     data = res_inject.json()
-    assert data["synthetic_object_id"] == "SYNTHETIC-99999"
+    # Numeric suffix is randomized per injection (generator.py) to avoid
+    # collisions across repeated demo triggers -- only the format is fixed.
+    assert data["synthetic_object_id"].startswith("SYNTHETIC-")
+    assert data["synthetic_object_id"][len("SYNTHETIC-"):].isdigit()
 
     res_conj = client.get("/api/v1/conjunctions")
     assert res_conj.status_code == 200

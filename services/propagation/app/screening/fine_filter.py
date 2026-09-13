@@ -31,6 +31,30 @@ class FineFilter:
         self.combined_hbr_km = combined_hbr_km or (settings.COMBINED_HARD_BODY_RADIUS_M / 1000.0)
         self.drag_activity_scalar = drag_activity_scalar
 
+    def _coarse_state(self, obj: Dict[str, Any], t_c, engine_cache: Optional[Dict[str, Any]]):
+        """SGP4 engine + position at the shared coarse time grid for one object.
+
+        When engine_cache is given (run_screening's bulk pass shares one dict
+        across every pair in a run), each object's engine construction and
+        91-point coarse propagation happens once no matter how many pairs it
+        appears in. Previously this was rebuilt from scratch -- fresh
+        Skyfield EarthSatellite + fresh propagation -- on every single
+        pairing; against the live catalog's ~1M coarse-surviving pairs that
+        redundant reconstruction, not the physics itself, was nearly the
+        entire cost of a /screen call. Standalone callers (tests calling
+        compute_conjunction_candidate directly for one pair) pass no cache
+        and get the exact previous behaviour.
+        """
+        cat_id = obj.get("catalog_id")
+        if engine_cache is not None and cat_id in engine_cache:
+            return engine_cache[cat_id]
+        engine = SGP4PropagationEngine(obj["tle_line_1"], obj["tle_line_2"], obj.get("name", "OBJECT"))
+        pos = engine.satellite.at(t_c).position.km
+        result = (engine, pos)
+        if engine_cache is not None:
+            engine_cache[cat_id] = result
+        return result
+
     def compute_conjunction_candidate(
         self,
         primary: Dict[str, Any],
@@ -39,7 +63,8 @@ class FineFilter:
         horizon_minutes: int = 90,
         initial_step_minutes: float = 1.0,
         refinement_window_seconds: float = 120.0,
-        refinement_step_seconds: float = 5.0
+        refinement_step_seconds: float = 5.0,
+        engine_cache: Optional[Dict[str, Any]] = None,
     ) -> Optional[ConjunctionCandidate]:
         """
         Stage 2 Fine Screening:
@@ -52,20 +77,25 @@ class FineFilter:
         if start_dt.tzinfo is None:
             start_dt = start_dt.replace(tzinfo=timezone.utc)
 
-        engine_p = SGP4PropagationEngine(
-            primary["tle_line_1"], primary["tle_line_2"], primary.get("name", "PRIMARY")
-        )
-        engine_s = SGP4PropagationEngine(
-            secondary["tle_line_1"], secondary["tle_line_2"], secondary.get("name", "SECONDARY")
-        )
-
         # 1. Vectorized Coarse Scan
-        num_coarse_steps = int(horizon_minutes / initial_step_minutes) + 1
-        times_coarse = [start_dt + timedelta(minutes=i * initial_step_minutes) for i in range(num_coarse_steps)]
-        t_c = ts.from_datetimes(times_coarse)
+        # The time grid depends only on (start_dt, horizon_minutes,
+        # initial_step_minutes) -- identical for every pair in one
+        # run_screening() pass -- so ts.from_datetimes() (a Skyfield
+        # timescale conversion, not a free operation) gets cached the same
+        # way per-object propagation does, instead of rebuilding the
+        # identical 91-point grid on every one of ~1M pairs.
+        grid_key = ("__grid__", start_dt, horizon_minutes, initial_step_minutes)
+        if engine_cache is not None and grid_key in engine_cache:
+            times_coarse, t_c = engine_cache[grid_key]
+        else:
+            num_coarse_steps = int(horizon_minutes / initial_step_minutes) + 1
+            times_coarse = [start_dt + timedelta(minutes=i * initial_step_minutes) for i in range(num_coarse_steps)]
+            t_c = ts.from_datetimes(times_coarse)
+            if engine_cache is not None:
+                engine_cache[grid_key] = (times_coarse, t_c)
 
-        pos_p = engine_p.satellite.at(t_c).position.km
-        pos_s = engine_s.satellite.at(t_c).position.km
+        engine_p, pos_p = self._coarse_state(primary, t_c, engine_cache)
+        engine_s, pos_s = self._coarse_state(secondary, t_c, engine_cache)
 
         dx = pos_p[0] - pos_s[0]
         dy = pos_p[1] - pos_s[1]
@@ -75,6 +105,19 @@ class FineFilter:
         min_idx = int(np.argmin(dists))
         min_dist_km = float(dists[min_idx])
         min_tca_dt = times_coarse[min_idx]
+
+        # Early-exit: coarse samples are initial_step_minutes apart, so the
+        # true continuous minimum near the sampled minimum can only differ
+        # from it by roughly (relative velocity x half the coarse step) --
+        # even at a worst-case ~15 km/s LEO-LEO closing speed and a 1-minute
+        # step, that's ~450 km. A generous 750 km margin past threshold_km
+        # means a pair that could ever refine to <= threshold_km is never
+        # skipped, while every pair whose coarse pass shows it nowhere near
+        # threshold skips the expensive refined propagation + Pc computation
+        # (scipy dblquad) entirely. This is what makes screening the live
+        # catalog's ~1M coarse-surviving pairs tractable.
+        if min_dist_km > self.threshold_km + 750.0:
+            return None
 
         # 2. Vectorized Local Time Refinement around minimum interval
         refined_start = min_tca_dt - timedelta(seconds=refinement_window_seconds / 2.0)

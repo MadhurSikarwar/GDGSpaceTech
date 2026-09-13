@@ -148,7 +148,6 @@ async function runMitigationFlow(conj, maneuver) {
 
   const postConj = {
     ...conj,
-    conjunction_id: conjId + '_POST',
     closest_approach: {
       distance_km: postMiss,
       relative_velocity_km_s: preVel, // velocity unchanged by a small translational burn
@@ -160,13 +159,17 @@ async function runMitigationFlow(conj, maneuver) {
 
   setMitigation(conjId, { status: 'running', step: 'assess', preMiss, preRisk, preLevel, prePc, postMiss });
 
-  // Re-assess risk on projected post-burn state (live or fallback) -- this
-  // stays the source of the 0-100 postRisk score either way, since that
-  // gauge exists regardless of whether Pc is available. When the maneuver
+  // Re-assess risk on projected post-burn state. This is a hypothetical
+  // future state with no record in the backend, so it can only ever be
+  // scored by the same local heuristic api.assessRisk() falls back to on
+  // failure -- call that directly rather than dispatching a live request
+  // against it. (Previously done by suffixing the id with '_POST' so the
+  // backend's lookup would miss and force the fallback; that "worked" but
+  // fired a 404 console error on every single approval.) When the maneuver
   // DID come from the real optimizer, postPc/postLevel below are overridden
   // with its actual predicted Pc instead of re-derived from the synthetic
   // postConj (which carries only a distance, not a real covariance).
-  const postRiskRes = await api.assessRisk(postConj);
+  const postRiskRes = { data: api.localRiskAssessment(postConj), live: false };
   const postRisk  = postRiskRes.data.risk_score;
   let postLevel = postRiskRes.data.risk_level;
   if (postPc != null) postLevel = pcTier(postPc);
@@ -538,7 +541,15 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
     </div>`;
   }
   const selected = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
-  const isFailure = selectedId === "NO_FEASIBLE_MANEUVER";
+  // The explicit sentinel is one way a conjunction can end up with nothing
+  // to approve, but not the only one -- some geometries make the live
+  // maneuver-generation endpoint return an empty candidates array outright
+  // with no sentinel set, which left `selected` undefined and the approve
+  // button wired to a click handler that threw (doApprove reading
+  // .maneuver_id off undefined). Treat "nothing resolved" as the same
+  // failure state regardless of why, since there's equally nothing to
+  // render an approve action for.
+  const isFailure = selectedId === "NO_FEASIBLE_MANEUVER" || !selected;
   
   if (rejection) {
     return `
@@ -717,6 +728,10 @@ function mitigationCard(conj, mitigation, manEntry, approval) {
 
 function doApprove(conj, manEntry, selectedId) {
   const maneuver = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
+  // Backstop: approvalGate's isFailure guard means the button that calls
+  // this shouldn't render when there's no candidate to approve, but never
+  // throw on a stray/late click if it somehow does.
+  if (!maneuver) return;
   setApproval(conj.conjunction_id, maneuver.maneuver_id);
 
   document.body.classList.add('approval-flash');

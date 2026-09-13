@@ -1,3 +1,5 @@
+import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -22,6 +24,7 @@ from shared.schemas.space_weather import SpaceWeatherSnapshot
 from shared.schemas.ground_station import GroundStation, GroundStationPasses
 
 router = APIRouter(prefix=settings.API_PREFIX, tags=["Orbital Intelligence Foundation"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health", summary="Service Health & Status")
@@ -75,6 +78,22 @@ def ingest_data(
     }
 
 
+def _is_finite_state(state: StateVector) -> bool:
+    """SGP4 can silently return NaN (not raise) for a handful of orbits --
+    observed on the live catalog for at least one decayed/degenerate TLE
+    (semi-major axis decayed inside Earth, which SGP4 doesn't guard against).
+    A single such object anywhere in the batch fails FastAPI's JSON encoding
+    for the *entire* /objects response (NaN isn't valid JSON), taking down
+    the listing for every other, perfectly good object too.
+    """
+    vals = (
+        state.position_km.x, state.position_km.y, state.position_km.z,
+        state.velocity_km_s.x, state.velocity_km_s.y, state.velocity_km_s.z,
+        state.altitude_km,
+    )
+    return all(math.isfinite(v) for v in vals)
+
+
 def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
     """Run SGP4 + build the response model for a batch of ObjectDB rows.
 
@@ -86,9 +105,16 @@ def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
     now_dt = datetime.now(timezone.utc)
     results: List[OrbitalObject] = []
     for o in db_objs:
-        engine = SGP4PropagationEngine(o.raw_tle_line1, o.raw_tle_line2, o.name)
-        state = engine.propagate_state(now_dt)
-        data_quality = engine.calculate_data_age(o.epoch, now_dt)
+        try:
+            engine = SGP4PropagationEngine(o.raw_tle_line1, o.raw_tle_line2, o.name)
+            state = engine.propagate_state(now_dt)
+            if not _is_finite_state(state):
+                logger.warning(f"Skipping {o.catalog_id} ({o.name}): SGP4 produced a non-finite state (likely a decayed orbit).")
+                continue
+            data_quality = engine.calculate_data_age(o.epoch, now_dt)
+        except Exception as exc:
+            logger.warning(f"Skipping {o.catalog_id} ({o.name}): propagation failed: {exc}")
+            continue
 
         results.append(OrbitalObject(
             object_id=o.object_id,
@@ -118,10 +144,11 @@ def _propagate_objects(db_objs: List[Any]) -> List[OrbitalObject]:
 # and immediately after ingest/inject (the frontend reloads the catalog right
 # after injecting synthetic debris). Two complementary bounds on that cost:
 #   - limit/offset below caps how many objects are ever fetched+propagated in
-#     one call (frontend defaults to 5000 of however many are tracked), with
-#     priority ordering in the DB layer (repository.get_all_objects)
-#     guaranteeing synthetic debris and the ISS demo target are always on the
-#     first page even when paginated.
+#     one call (frontend defaults to 20000, comfortably above the live
+#     catalog's ~16.2k and growing via demo injections), with priority
+#     ordering in the DB layer (repository.get_all_objects) guaranteeing
+#     synthetic debris and the ISS demo target are always on the first page
+#     even when paginated.
 #   - This cache serves a repeat call for the *same* (object_type, limit,
 #     offset) instantly instead of recomputing it.
 #
@@ -144,7 +171,7 @@ _objects_cache: Dict[tuple, Dict[str, Any]] = {}
 @router.get("/objects", response_model=List[OrbitalObject], summary="List Tracked Orbital Objects")
 def get_objects(
     object_type: Optional[str] = Query(default=None, description="Filter by SATELLITE, DEBRIS, SYNTHETIC_DEBRIS"),
-    limit: int = Query(default=5000, ge=1, le=5000, description="Maximum objects to propagate & return (1-5000)"),
+    limit: int = Query(default=20000, ge=1, le=20000, description="Maximum objects to propagate & return (1-20000)"),
     offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
 ):

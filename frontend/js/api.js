@@ -43,14 +43,19 @@ export async function checkHealth(base, timeoutMs = 4000) {
 
 // ---- Tracking + Screening (platform baseline, expected live) ----
 
-export async function getObjects(objectType = null, limit = 5000, offset = 0) {
+export async function getObjects(objectType = null, limit = 20000, offset = 0) {
   const params = new URLSearchParams();
   if (objectType) params.append('object_type', objectType);
   if (limit) params.append('limit', limit);
   if (offset) params.append('offset', offset);
   const qs = params.toString() ? `?${params.toString()}` : '';
   try {
-    return { data: await fetchJSON(`${BASES.tracking}/objects${qs}`, {}, 30000), live: true };
+    // Propagating the full ~16k+ live catalog measured at 11-18s depending on
+    // concurrent load on the (single-process, sync) propagation service --
+    // 30s cut it too close and was observed timing out under load, silently
+    // dropping to the 2-object offline fixture. Matches the 60s budget
+    // optimizeDecision/submitFeedback already use for slow live calls.
+    return { data: await fetchJSON(`${BASES.tracking}/objects${qs}`, {}, 60000), live: true };
   } catch (err) {
     console.warn('[api] tracking /objects unreachable, using bundled fixture', err);
     const data = await fetchJSON(FIXTURES.objects);
@@ -78,7 +83,22 @@ export async function runIngest(group = 'active') {
 }
 
 export async function runScreen(horizon = 90, thresholdKm = 50.0) {
-  return fetchJSON(`${BASES.tracking}/screen?horizon=${horizon}&threshold_km=${thresholdKm}`, { method: 'POST' }, 20000);
+  // Full-catalog screen: ~16k satellites x ~150 debris/rocket-body/synthetic
+  // objects measured at ~150s of SGP4 fine-screening plus ~400s saving each
+  // of the ~1.8k flagged candidates to the (remote Supabase) DB one row at a
+  // time -- ~9 minutes end-to-end. Unlike /demo/inject-synthetic (which
+  // screens just the one known pair in under a second, see routes.py), this
+  // is a real, user-triggered "screen everything" action with no way to
+  // shrink its own workload from here. TODO(perf): the DB-write phase is now
+  // the bigger of the two halves and is a good next target -- routes.py's
+  // /screen handler already holds every object it needs in memory, so
+  // batching those writes (one commit instead of one per candidate, and a
+  // precomputed catalog_id->object_id map instead of 2 lookup queries per
+  // candidate inside save_conjunction) should cut it dramatically without
+  // touching the screening math itself. Until then, give this call room to
+  // actually finish rather than let the UI report failure on work that's
+  // still completing server-side.
+  return fetchJSON(`${BASES.tracking}/screen?horizon=${horizon}&threshold_km=${thresholdKm}`, { method: 'POST' }, 600000);
 }
 
 export async function injectSyntheticDebris(targetCatalogId = '25544') {

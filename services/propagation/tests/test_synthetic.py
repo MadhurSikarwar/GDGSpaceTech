@@ -16,12 +16,20 @@ def test_synthetic_debris_generation_and_conjunction():
         "source": "CelesTrak"
     }
 
-    synth_obj = generate_verified_synthetic_debris(iss_obj, tca_offset_minutes=45.0, target_separation_km=8.2)
+    synth_obj = generate_verified_synthetic_debris(iss_obj, tca_offset_minutes=45.0)
 
-    # Verify labelling and ID rules
-    assert synth_obj["catalog_id"] == "SYNTHETIC-99999"
+    # Verify labelling and ID rules. The numeric suffix is randomized per call
+    # (see generator.py's synth_num, salted with random.randint to avoid
+    # collisions across repeated injections) so only the format is checked,
+    # not an exact value.
+    assert synth_obj["catalog_id"].startswith("SYNTHETIC-")
+    assert synth_obj["catalog_id"][len("SYNTHETIC-"):].isdigit()
     assert synth_obj["object_type"] == "SYNTHETIC_DEBRIS"
-    assert "SYNTHETIC_DEBRIS" in synth_obj["name"]
+    # Display name is "DEB-<target clean name>-<same numeric suffix as catalog_id>"
+    # (generator.py) -- object_type, not the name string, carries the
+    # SYNTHETIC_DEBRIS classification.
+    assert synth_obj["name"].startswith("DEB-")
+    assert synth_obj["name"].endswith(synth_obj["catalog_id"].split("-")[1])
 
     # Run fine filter and check detected close approach candidate
     fine = FineFilter(threshold_km=50.0)
@@ -29,5 +37,5 @@ def test_synthetic_debris_generation_and_conjunction():
 
     assert candidate is not None
     assert candidate.primary_object == "25544"
-    assert candidate.secondary_object == "SYNTHETIC-99999"
+    assert candidate.secondary_object == synth_obj["catalog_id"]
     assert candidate.closest_approach.distance_km <= 50.0

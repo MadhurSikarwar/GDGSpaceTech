@@ -75,6 +75,7 @@ async function main() {
   wireGlobeCallbacks();
   wireSelectionCard();
   wireTimelineControls();
+  wireGuidedTour();
   document.getElementById('catalogCollapseBtn').addEventListener('click', () => {
     document.querySelector('.catalog-float').classList.toggle('collapsed');
   });
@@ -230,6 +231,10 @@ async function loadObjects() {
   setObjects(data);
   globe.setObjects(data);
   document.getElementById('renderedCount').textContent = data.length;
+  // Landing page's live-catalog readout -- only present pre-Enter, harmless
+  // no-op via optional chaining once the overlay's been dismissed/removed.
+  const landingCount = document.getElementById('landingLiveCount');
+  if (landingCount) landingCount.textContent = data.length.toLocaleString();
   pushLog(`Loaded ${data.length} tracked object${data.length === 1 ? '' : 's'} ${live ? '(live)' : '(offline fixture)'}`, live ? 'info' : 'warn');
 }
 
@@ -237,7 +242,28 @@ async function loadConjunctions() {
   const { data, live } = await api.getConjunctions();
   setConjunctions(data);
   pushLog(`${data.length} conjunction candidate${data.length === 1 ? '' : 's'} loaded ${live ? '(live)' : '(offline fixture)'}`);
-  data.forEach((c) => { if (!state.risk.has(c.conjunction_id)) prefetchRisk(c); });
+  prefetchRiskThrottled(data.filter((c) => !state.risk.has(c.conjunction_id)));
+}
+
+// Firing one assessRisk call per conjunction with no cap was fine while the
+// catalog only ever had a handful of conjunctions in flight, but a full
+// /screen run can flag 1000+ at once -- launching that many concurrent
+// fetches in one tick exhausted the browser's own connection/socket budget
+// (ERR_INSUFFICIENT_RESOURCES) well before the risk service was the
+// bottleneck. A small fixed-size worker pool bounds how many are ever in
+// flight at once while still prefetching every conjunction's badge.
+const RISK_PREFETCH_CONCURRENCY = 6;
+
+async function prefetchRiskThrottled(conjunctions) {
+  let next = 0;
+  async function worker() {
+    while (next < conjunctions.length) {
+      await prefetchRisk(conjunctions[next++]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(RISK_PREFETCH_CONCURRENCY, conjunctions.length) }, worker)
+  );
 }
 
 async function prefetchRisk(conj) {
@@ -279,6 +305,12 @@ function trajectoryHorizonFor(catalogId) {
 }
 
 async function fetchTrajectoryCached(catalogId) {
+  // A conjunction record with an incomplete object reference (seen on at
+  // least one seeded demo row, secondary_object: "") would otherwise build
+  // a .../objects//trajectory request -- a guaranteed 404, not a real
+  // lookup failure. Nothing to fetch, so resolve to null instead of letting
+  // the request go out at all.
+  if (!catalogId) return null;
   if (trajectoryCache.has(catalogId)) return trajectoryCache.get(catalogId);
   const data = await api.getTrajectory(catalogId, trajectoryHorizonFor(catalogId), 1.0);
   trajectoryCache.set(catalogId, data);
@@ -440,11 +472,15 @@ async function onActiveConjunctionChanged() {
       fetchTrajectoryCached(conj.secondary_object),
     ]);
     if (state.activeConjunctionId !== conjId) return;
-    globe.focusTrajectory(conj.primary_object, trajA.trajectory, PRIMARY_COLOR);
-    globe.focusTrajectory(conj.secondary_object, trajB.trajectory, SECONDARY_COLOR);
+    // Draw whichever side actually resolved -- one missing object reference
+    // (see fetchTrajectoryCached) shouldn't blank out the other, valid side.
+    if (trajA) globe.focusTrajectory(conj.primary_object, trajA.trajectory, PRIMARY_COLOR);
+    if (trajB) globe.focusTrajectory(conj.secondary_object, trajB.trajectory, SECONDARY_COLOR);
     globe.setSimMinutes(state.simMinutes);
-    const tcaPoint = nearestPointAtTime(trajA.trajectory, conj.tca);
-    if (tcaPoint) globe.showConjunctionAt({ x: tcaPoint.x, y: tcaPoint.y, z: tcaPoint.z });
+    if (trajA) {
+      const tcaPoint = nearestPointAtTime(trajA.trajectory, conj.tca);
+      if (tcaPoint) globe.showConjunctionAt({ x: tcaPoint.x, y: tcaPoint.y, z: tcaPoint.z });
+    }
   } catch (err) {
     console.warn('conjunction trajectory focus failed', err);
   }
@@ -694,6 +730,82 @@ function wireTimelineControls() {
     }
   }
   requestAnimationFrame(loop);
+}
+
+// ------------------------------------------------------------ guided tour --
+// Driver.js (CDN, index.html <head>) drives a fixed walkthrough of the five
+// HUD elements a first-time operator most needs oriented: the demo trigger,
+// view switcher, catalog, timeline scrubber, and space-weather readout.
+// Built once on first click and reused after that; index.html/main.css carry
+// the CDN tags and the .driver-popover theme override respectively.
+function wireGuidedTour() {
+  const icon = document.getElementById('tourToggleIcon');
+  if (icon) icon.innerHTML = icons.flag;
+
+  const btn = document.getElementById('tourToggleBtn');
+  if (!btn) return;
+
+  let tour = null;
+  btn.addEventListener('click', () => {
+    if (!tour) {
+      if (!window.driver?.js?.driver) {
+        toast('TOUR UNAVAILABLE', 'Guided tour library failed to load — check your connection.', 'warn');
+        return;
+      }
+      tour = window.driver.js.driver({
+        showProgress: true,
+        animate: true,
+        popoverClass: 'og-tour-popover',
+        steps: [
+          {
+            element: '#demoBtn',
+            popover: {
+              title: 'Simulate a Threat',
+              description: 'Start by clicking here to instantly inject a synthetic debris piece on a collision course with the ISS.',
+              side: 'bottom', align: 'end',
+            },
+          },
+          {
+            element: '#navTabs',
+            popover: {
+              title: 'Mission Views',
+              description: 'Switch between the live 3D Orbit view, the list of Conjunctions, and the AI Decision Pipeline.',
+              side: 'bottom', align: 'start',
+            },
+          },
+          {
+            element: '.catalog-float',
+            popover: {
+              title: 'Space Object Catalog',
+              description: 'Search and filter through 10,000+ live satellites, rocket bodies, and debris pieces.',
+              side: 'right', align: 'start',
+            },
+          },
+          {
+            element: '.timeline-bar',
+            popover: {
+              title: 'Time Travel',
+              description: 'Use this 90-minute scrubber to fast-forward orbital trajectories and visualize the exact moment of closest approach.',
+              side: 'top', align: 'center',
+            },
+          },
+          {
+            element: '#spaceWeatherBadge',
+            popover: {
+              title: 'Live Space Weather',
+              description: 'We pull live NOAA data. High solar flux increases atmospheric drag, which affects our collision probability models.',
+              side: 'bottom', align: 'center',
+            },
+          },
+        ],
+      });
+    }
+    // The catalog and timeline steps only exist in the DOM's visible layout
+    // on the Orbit view (see index.html's view-orbit section) -- switch
+    // there first so every step has something on-screen to highlight.
+    setView('orbit');
+    tour.drive();
+  });
 }
 
 function setCameraMode(inertial) {

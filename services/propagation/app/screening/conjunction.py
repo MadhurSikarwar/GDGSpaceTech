@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from services.propagation.app.screening.coarse_filter import CoarseFilter
 from services.propagation.app.screening.fine_filter import FineFilter
@@ -48,10 +49,17 @@ class ScreeningPipeline:
         logger.info(f"Stage 1 Coarse Filter: {len(candidate_pairs)} candidate pairs survived.")
 
         # Stage 2: Fine Screening & Local Refinement
+        # One shared snapshot time + engine cache for the whole pass: every
+        # pair is screened as of the same instant (rather than each
+        # independently drifting datetime.now() call), and each object's SGP4
+        # engine + coarse propagation is built once no matter how many pairs
+        # it appears in -- see FineFilter._coarse_state for why that matters.
         conjunctions: List[ConjunctionCandidate] = []
+        start_dt = datetime.now(timezone.utc)
+        engine_cache: Dict[str, Any] = {}
         for p, s in candidate_pairs:
             candidate = self.fine_filter.compute_conjunction_candidate(
-                p, s, horizon_minutes=horizon_minutes
+                p, s, start_dt=start_dt, horizon_minutes=horizon_minutes, engine_cache=engine_cache
             )
             if candidate:
                 conjunctions.append(candidate)
