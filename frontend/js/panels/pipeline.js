@@ -316,7 +316,7 @@ function renderBody(conjId) {
   }
 
   if (decEntry) html += decisionCard(decEntry);
-  if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval, rejection);
+  if (manEntry && decEntry) html += approvalGate(conj, manEntry, selectedManeuverId, approval, rejection, decEntry);
   if (approval) html += mitigationCard(conj, mitigation, manEntry, approval);
   html += `</div>`;
   body.innerHTML = html;
@@ -528,7 +528,7 @@ function decisionCard(decEntry) {
   </div>`;
 }
 
-function approvalGate(conj, manEntry, selectedId, approval, rejection) {
+function approvalGate(conj, manEntry, selectedId, approval, rejection, decEntry) {
   if (approval) {
     const m = manEntry.data.candidates.find((c) => c.maneuver_id === approval.maneuverId);
     return `
@@ -541,16 +541,40 @@ function approvalGate(conj, manEntry, selectedId, approval, rejection) {
     </div>`;
   }
   const selected = manEntry.data.candidates.find((c) => c.maneuver_id === selectedId) || manEntry.data.candidates[0];
-  // The explicit sentinel is one way a conjunction can end up with nothing
-  // to approve, but not the only one -- some geometries make the live
+  // "NONE" and "NO_FEASIBLE_MANEUVER" are NOT the same outcome, even though
+  // both leave zero candidates to approve -- see services/optimizer/app/
+  // agent/{workflow,orchestrator}.py. "NONE" means the agent looked at a LOW
+  // risk tier and correctly decided a maneuver isn't warranted at all (a
+  // *good* outcome -- it deliberately never generates candidates for this
+  // case). "NO_FEASIBLE_MANEUVER" means it generated candidates and every
+  // one of them violated a hard constraint (a real failure needing a human).
+  // Rendering both as "No Feasible Maneuvers Remain / intervention required"
+  // told an operator a low-risk, correctly-monitored encounter had failed.
+  const isMonitorOnly = selectedId === "NONE";
+  // The sentinel is one way a conjunction can end up with nothing to
+  // approve, but not the only one -- some geometries make the live
   // maneuver-generation endpoint return an empty candidates array outright
   // with no sentinel set, which left `selected` undefined and the approve
   // button wired to a click handler that threw (doApprove reading
-  // .maneuver_id off undefined). Treat "nothing resolved" as the same
-  // failure state regardless of why, since there's equally nothing to
-  // render an approve action for.
-  const isFailure = selectedId === "NO_FEASIBLE_MANEUVER" || !selected;
-  
+  // .maneuver_id off undefined). Treat any other "nothing resolved" case as
+  // the failure state, since there's equally nothing to render an approve
+  // action for.
+  const isFailure = !isMonitorOnly && (selectedId === "NO_FEASIBLE_MANEUVER" || !selected);
+
+  if (isMonitorOnly) {
+    const reason = decEntry?.data?.decision?.reason
+      ? escapeHtml(cleanLabel(decEntry.data.decision.reason))
+      : 'Risk is low enough that no evasive maneuver is warranted.';
+    return `
+    <div class="stage-card">
+      <div class="stage-card-head"><span class="stage-card-eyebrow">05 · HUMAN APPROVAL GATE</span></div>
+      <div class="approved-banner" style="background: var(--green-dim); color: var(--green); border-color: var(--green-dim);">
+        ${icons.check}
+        <div><b>No Maneuver Required.</b> ${reason} No action is needed from the operator; the encounter stays under continuous monitoring.</div>
+      </div>
+    </div>`;
+  }
+
   if (rejection) {
     return `
     <div class="stage-card">
