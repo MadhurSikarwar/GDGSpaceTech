@@ -1,0 +1,4 @@
+from_org,to_org,transfer_date,note
+INMAR,INMRL,1999-04-15,Inmarsat privatised (International Maritime Satellite Organization -> Inmarsat Ltd)
+INMRL,INMRV,2023-05-31,Viasat completes acquisition of Inmarsat
+O3B,O3BS,2017-05-01,SES completes acquisition of O3b Networks

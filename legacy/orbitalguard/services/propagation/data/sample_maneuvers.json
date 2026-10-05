@@ -1,0 +1,22 @@
+[
+  {
+    "conjunction_id": "CONJ-20260912-001",
+    "primary_object": "25544",
+    "candidates": [
+      {
+        "maneuver_id": "M1",
+        "delta_v_m_s": 0.85,
+        "burn_direction": "POSIGRADE",
+        "new_separation_km": 24.5,
+        "resulting_risk": "MEDIUM"
+      },
+      {
+        "maneuver_id": "M2",
+        "delta_v_m_s": 1.42,
+        "burn_direction": "RETROGRADE",
+        "new_separation_km": 54.2,
+        "resulting_risk": "LOW"
+      }
+    ]
+  }
+]

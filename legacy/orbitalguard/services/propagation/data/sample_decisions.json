@@ -1,0 +1,14 @@
+[
+  {
+    "conjunction_id": "CONJ-20260912-001",
+    "decision": {
+      "recommended_maneuver_id": "M2",
+      "reason": "M2 retrograde burn provides 54.2 km separation, reducing risk to LOW with minimal fuel expenditure."
+    },
+    "human_approval_required": true,
+    "simulation": {
+      "status": "PENDING",
+      "new_tca_distance_km": 54.2
+    }
+  }
+]
