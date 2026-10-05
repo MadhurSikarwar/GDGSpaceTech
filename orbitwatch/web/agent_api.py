@@ -6,12 +6,12 @@ agent_assessment / agent_step for exactly this).
 """
 import json
 
-from flask import Blueprint, abort
+from flask import Blueprint, abort, request
 
-from orbitwatch import db, orbital
+from orbitwatch import db, decisions, orbital
 from orbitwatch.agent import orchestrator
 from orbitwatch.physics import ground, spaceweather
-from orbitwatch.web.common import account, clean, current_user, int_arg, ok, role_required
+from orbitwatch.web.common import account, body, clean, current_user, int_arg, ok, role_required
 
 bp = Blueprint("agent_api", __name__, url_prefix="/api")
 
@@ -31,6 +31,20 @@ def _assessment(acct, assessment_id, with_steps=True):
         return None
     row["maneuver"] = _json(row["maneuver"])
     out = clean(row)
+    try:
+        full = decisions.load(acct, assessment_id)
+        out["subject"] = clean(full["subject"])
+        out["synthetic"] = full["synthetic"]
+        out["decision_record"] = clean(full["decision_record"]) if full["decision_record"] else None
+    except decisions.DecisionError:
+        out["subject"], out["synthetic"], out["decision_record"] = {}, bool(row.get("demo_event_id")), None
+    out["replans"] = clean(db.query(acct, "SELECT assessment_id, status, decision, started_at FROM agent_assessment "
+                                          "WHERE parent_assessment_id = %s ORDER BY assessment_id", (assessment_id,)))
+    user = current_user()
+    burn = (row["maneuver"] or {}).get("burn_time_utc") if isinstance(row["maneuver"], dict) else None
+    out["can_decide"] = bool(user and user["role"] in ("analyst", "admin") and row["status"] == "complete"
+                             and row.get("origin") == "orbitwatch" and not out["decision_record"])
+    out["burn_time_utc"] = burn
     if with_steps:
         steps = db.query(acct, "SELECT step_no, actor, tool_name, arguments, summary, payload, created_at "
                                "FROM agent_step WHERE assessment_id = %s ORDER BY step_no", (assessment_id,))
@@ -80,13 +94,53 @@ def assessment(assessment_id):
 
 @bp.get("/assessments")
 def recent_assessments():
-    rows = db.query(account(), """
-        SELECT a.assessment_id, a.event_id, a.status, a.engine, a.risk_tier, a.decision, a.delta_v_mps, a.pc_before,
-               a.pc_after, a.burn_direction, a.started_at, a.finished_at, d.primary_name, d.secondary_name,
-               d.time_of_closest_approach, d.miss_distance_km
-          FROM agent_assessment a JOIN v_conjunction_detail d ON d.event_id = a.event_id
+    """Recent agent runs on real and synthetic close approaches (synthetic ones are flagged)."""
+    archived = "" if request.args.get("archived") == "1" else "AND a.origin = 'orbitwatch'"
+    rows = db.query(account(), f"""
+        SELECT a.assessment_id, a.event_id, a.demo_event_id, a.demo_event_id IS NOT NULL AS synthetic, a.origin,
+               a.status, a.engine, a.risk_tier, a.decision, a.delta_v_mps, a.pc_before, a.pc_after, a.burn_direction,
+               a.burn_time, a.started_at, a.finished_at, a.parent_assessment_id,
+               COALESCE(d.primary_name, tso.name) AS primary_name, COALESCE(d.secondary_name, dob.name) AS secondary_name,
+               COALESCE(d.time_of_closest_approach, de.time_of_closest_approach) AS time_of_closest_approach,
+               COALESCE(d.miss_distance_km, de.miss_distance_km) AS miss_distance_km,
+               md.status AS decision_status, md.execution
+          FROM agent_assessment a
+          LEFT JOIN v_conjunction_detail d ON d.event_id = a.event_id
+          LEFT JOIN demo_event de ON de.demo_event_id = a.demo_event_id
+          LEFT JOIN demo_object dob ON dob.demo_object_id = de.demo_object_id
+          LEFT JOIN space_object tso ON tso.norad_id = de.target_norad
+          LEFT JOIN maneuver_decision md ON md.assessment_id = a.assessment_id
+         WHERE TRUE {archived}
          ORDER BY a.assessment_id DESC LIMIT %s""", (min(int_arg("limit", 10), 100),))
+    for r in rows:
+        r["synthetic"] = bool(r["synthetic"])
     return ok({"items": clean(rows)})
+
+
+@bp.post("/assessments/<int:assessment_id>/decision")
+@role_required("analyst")
+def decide(assessment_id):
+    """Approve (simulated execution) or reject the recommended manoeuvre."""
+    data = body()
+    try:
+        out = decisions.decide(account(), current_user(), assessment_id, data.get("action"),
+                               reason=data.get("reason"), confirm=data.get("confirm"), replan=bool(data.get("replan")),
+                               min_miss_km=data.get("min_miss_km"))
+    except decisions.DecisionError as exc:
+        return ok({"error": str(exc)}, exc.status)
+    return ok(clean(out) if isinstance(out, dict) else out, 201)
+
+
+@bp.get("/assessments/<int:assessment_id>/simulation")
+def simulation(assessment_id):
+    """Before/after trajectories of the recommended burn (labelled SIMULATED)."""
+    acct = account()
+    try:
+        return ok(decisions.simulate(acct, decisions.load(acct, assessment_id)))
+    except decisions.DecisionError as exc:
+        return ok({"error": str(exc)}, exc.status)
+    except ValueError as exc:
+        return ok({"error": str(exc)}, 422)
 
 
 @bp.get("/space-weather")

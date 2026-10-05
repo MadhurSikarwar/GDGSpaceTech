@@ -1,6 +1,6 @@
 import { csvUrl, del, get, post, qs } from '../api.js';
 import { lineChart, slot } from '../charts.js';
-import { empty, errorBox, esc, fmt, h, isoInput, loading, objLink, riskBadge, table, toast, typeTag } from '../ui.js';
+import { age, empty, errorBox, esc, fmt, h, isoInput, loading, objLink, prov, riskBadge, table, toast, typeTag } from '../ui.js';
 import { updateAlertBadge } from '../app.js';
 
 export async function render(root, { params, app }) {
@@ -52,7 +52,8 @@ export async function render(root, { params, app }) {
   const grid = h(`<div class="grid cols-3"></div>`);
   root.appendChild(grid);
   grid.appendChild(h(`<section class="card"><div class="card-head"><h2>Current orbit</h2>
-      <span class="sub">${orbit ? `epoch ${fmt.dt(orbit.epoch)}` : ''}</span></div>
+      <span class="sub">${orbit ? `epoch ${fmt.dt(orbit.epoch)} · age ${age(orbit.epoch)}` : ''}</span></div>
+    ${orbit ? `<p style="margin:-6px 0 12px">${prov({ src: orbit.source, fetched: orbit.fetched_at, model: 'SGP4 mean elements' })}</p>` : ''}
     ${orbit ? `<dl class="facts">
       <dt>Perigee × apogee</dt><dd>${fmt.num(orbit.perigee_km, 1)} × ${fmt.num(orbit.apogee_km, 1)} km</dd>
       <dt>Mean altitude</dt><dd>${fmt.km(orbit.mean_altitude_km)}</dd>

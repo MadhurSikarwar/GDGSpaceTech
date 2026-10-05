@@ -22,7 +22,7 @@ import time
 import requests
 
 from orbitwatch import db, orbital
-from orbitwatch.agent.tools import RISK_ORDER, TOOL_SCHEMAS, AgentTools
+from orbitwatch.agent.tools import RISK_ORDER, TOOL_SCHEMAS, AgentTools, DemoAgentTools
 
 log = logging.getLogger(__name__)
 
@@ -87,11 +87,14 @@ class LLMUnavailable(Exception):
 
 
 class DecisionAgent:
-    def __init__(self, assessment_id, event_id, account):
+    def __init__(self, assessment_id, event_id, account, synthetic=False, feedback=None, min_miss_km=None):
         self.assessment_id = assessment_id
         self.event_id = event_id
         self.account = account
-        self.tools = AgentTools(event_id, account)
+        self.synthetic = synthetic
+        self.feedback = feedback
+        self.min_miss_km = min_miss_km
+        self.tools = (DemoAgentTools if synthetic else AgentTools)(event_id, account, min_miss_km=min_miss_km)
         self.step = 0
         self.seen_calls = {}
 
@@ -187,8 +190,17 @@ class DecisionAgent:
         evidence = {name: self.call_tool(name, {}) for name in
                     ("get_conjunction", "get_space_weather", "compute_collision_probability", "assess_risk")}
         brief = "\n".join(f"- {name}: {self._for_llm(r)}" for name, r in evidence.items())
+        subject = (f"SYNTHETIC demo close approach #{self.event_id} (injected debris, a training scenario)"
+                   if self.synthetic else f"Close approach #{self.event_id}")
+        review = ""
+        if self.feedback or self.min_miss_km:
+            review = ("\nA human reviewer REJECTED the previous recommendation for this event"
+                      + (f" with this feedback: \"{self.feedback}\"" if self.feedback else "")
+                      + (f". The burn must now leave at least {self.min_miss_km:g} km miss distance; the candidate "
+                         "generator and evaluator enforce this." if self.min_miss_km else ".")
+                      + " Address the feedback in your explanation.\n")
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Close approach #{self.event_id}. Evidence gathered so far:\n{brief}\n"
+                    {"role": "user", "content": f"{subject}. Evidence gathered so far:\n{brief}\n{review}"
                                                 "Call any further tools you need (several at once is fine), "
                                                 "then finish by calling submit_decision."}]
         for _turn in range(MAX_TURNS):
@@ -275,6 +287,21 @@ class DecisionAgent:
         if risk["pc"] >= 1e-4 and decision == "MONITOR":
             self.record("guardrail", f"Pc {risk['pc']:.1e} is above 1e-4: manoeuvre analysis is mandatory")
             decision = "MANEUVER_RECOMMENDED"
+        if decision == "NO_FEASIBLE_MANEUVER":
+            # "Nothing is feasible" is only true once every candidate has been checked.
+            if not t.candidates and risk["risk_tier"] in ("HIGH", "CRITICAL"):
+                self.record("guardrail", "no candidates were generated: generating them before concluding nothing is feasible")
+                self.call_tool("generate_maneuver_candidates", {"count": 4})
+            unchecked = [cid for cid in t.candidates if cid not in t.evaluations]
+            if unchecked:
+                self.record("guardrail", f"{', '.join(unchecked)} not evaluated yet: checking before concluding nothing is feasible")
+                for cid in unchecked:
+                    self.call_tool("evaluate_maneuver_constraints", {"candidate_id": cid})
+            best = self._best_feasible()
+            if best:
+                self.record("guardrail", f"{best} passes every constraint: recommending it instead of NO_FEASIBLE_MANEUVER")
+                decision, chosen = "MANEUVER_RECOMMENDED", best
+                d = {**d, "explanation": ""}
         if decision == "MANEUVER_RECOMMENDED":
             if not t.candidates:
                 self.call_tool("generate_maneuver_candidates", {"count": 4})
@@ -318,22 +345,40 @@ class DecisionAgent:
         return base + " The assessment could not be completed with the available data."
 
 
-def start(event_id, user_id, account, background=True):
-    """Create an assessment row and run the agent (in a thread by default). Returns assessment_id."""
+def start(event_id, user_id, account, background=True, demo_event_id=None, parent_assessment_id=None,
+          feedback=None, min_miss_km=None):
+    """Create an assessment row and run the agent (in a thread by default). Returns assessment_id.
+
+    Either event_id (a real close approach) or demo_event_id (a synthetic demo one) is given. A re-plan
+    after a rejection carries the parent assessment, the reviewer's feedback and an optional minimum miss.
+    """
     cfg = llm_config()
     engine = f"groq:{cfg['model']}" if cfg["enabled"] else "deterministic"
-    _, assessment_id = db.execute(account, "INSERT INTO agent_assessment (event_id, requested_by, engine) VALUES (%s, %s, %s)",
-                                  (event_id, user_id, engine))
+    _, assessment_id = db.execute(account, """
+        INSERT INTO agent_assessment (event_id, demo_event_id, requested_by, engine, parent_assessment_id, feedback,
+                                      min_miss_km)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (None if demo_event_id else event_id, demo_event_id, user_id, engine, parent_assessment_id,
+         feedback[:1000] if feedback else None, min_miss_km))
+    subject = demo_event_id or event_id
+    kwargs = {"synthetic": bool(demo_event_id), "feedback": feedback, "min_miss_km": min_miss_km}
     if background:
-        threading.Thread(target=_run, args=(assessment_id, event_id, account, cfg), daemon=True,
+        threading.Thread(target=_run, args=(assessment_id, subject, account, cfg), kwargs=kwargs, daemon=True,
                          name=f"agent-{assessment_id}").start()
     else:
-        _run(assessment_id, event_id, account, cfg)
+        _run(assessment_id, subject, account, cfg, **kwargs)
     return assessment_id
 
 
-def _run(assessment_id, event_id, account, cfg):
-    agent = DecisionAgent(assessment_id, event_id, account)
+def _run(assessment_id, event_id, account, cfg, synthetic=False, feedback=None, min_miss_km=None):
+    agent = DecisionAgent(assessment_id, event_id, account, synthetic=synthetic, feedback=feedback,
+                          min_miss_km=min_miss_km)
+    if synthetic:
+        agent.record("system", "SYNTHETIC demo close approach: injected debris, not a real catalogue object")
+    if feedback or min_miss_km:
+        agent.record("system", "re-plan after a reviewer rejection"
+                     + (f': "{feedback[:300]}"' if feedback else "")
+                     + (f"; required miss distance >= {min_miss_km:g} km" if min_miss_km else ""))
     engine = f"groq:{cfg['model']}" if cfg["enabled"] else "deterministic"
     try:
         decision = None

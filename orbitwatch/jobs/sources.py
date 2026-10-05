@@ -31,6 +31,19 @@ def update_download(download_id, **fields):
         log.warning("could not update download_log: %s", exc)
 
 
+def record_source(source_key, status, records=None, message=None):
+    """Freshness bookkeeping for one data source (MySQL data_source), shown next to its data."""
+    try:
+        db.execute("jobs", """
+            UPDATE data_source
+               SET last_attempt_at = NOW(3),
+                   last_success_at = IF(%s = 'ok', NOW(3), last_success_at),
+                   last_status = %s, last_records = COALESCE(%s, last_records), last_message = %s
+             WHERE source_key = %s""", (status, status, records, (message or "")[:500] or None, source_key))
+    except Exception as exc:  # bookkeeping must never break the job itself
+        log.warning("could not update data_source %s: %s", source_key, exc)
+
+
 def fetch(url, source, cache_name, run_id=None, timeout=180, attempts=3, session=None, params=None):
     """GET url (retried with backoff) and keep a copy in the runtime cache.
 

@@ -2,7 +2,7 @@
 // the catalogue, the propagated positions, the upcoming close approaches and
 // the statistics all come from /api/landing and /api/visual.
 import { get } from '../api.js';
-import { CatalogCloud, CESIUM_VERSION, createViewer, loadCesium, RISK_COLORS, ringCanvas, sampledOrbit, TYPE_COLORS,
+import { ACCENT, CatalogCloud, CESIUM_VERSION, createViewer, dayView, loadCesium, orbitRing, RISK_COLORS, ringCanvas, sampledOrbit, TYPE_COLORS,
   TYPE_NAMES } from '../globe-core.js';
 import { esc, fmt, riskBadge } from '../ui.js';
 
@@ -73,7 +73,7 @@ export async function render(root, { app }) {
     const C = await loadCesium();
     if (!root.isConnected) return undefined;
     bootLine(`› cesiumjs ${CESIUM_VERSION} ······· <b>ready</b>`);
-    viewer = createViewer(C, $('#lpGlobe'), { widgets: false, interactive: false });
+    viewer = createViewer(C, $('#lpGlobe'), { interactive: false, creditContainer: root.querySelector('#lpCredits') });
     const hero = startHero(C, viewer, root, data, (n) => {
       bootLine(`› sgp4 ················ <b>${fmt.int(n)}</b> objects propagated`);
       setTimeout(hideBoot, 1200);
@@ -100,6 +100,7 @@ export async function render(root, { app }) {
 function template() {
   return `
   <div class="lp-globe" id="lpGlobe" aria-hidden="true"></div>
+  <div class="lp-credits" id="lpCredits"></div>
   <div class="lp-shade" aria-hidden="true"></div>
   <div class="lp-boot" id="lpBoot" aria-hidden="true"><div>orbitwatch // system start</div></div>
 
@@ -112,13 +113,14 @@ function template() {
     <div class="lp-copy">
       <div class="lp-kicker"><span class="lp-live">Live</span><span class="lp-sep">/</span><span id="kClock">--:--:-- UTC</span>
         <span class="lp-sep">/</span><span>Satellite &amp; debris tracking</span></div>
-      <h1 class="lp-title"><span class="count" id="hCount">——</span> objects<br><span class="dim">in Earth orbit.</span></h1>
+      <h1 class="lp-title"><span class="count" id="hCount">——</span> objects<br><span class="dim">tracked live.</span></h1>
       <p class="lp-lead">OrbitWatch tracks every catalogued satellite, rocket body and debris fragment, keeps the history of every
         orbit, and screens watched satellites for close approaches every <span id="hInterval">few</span> hours.</p>
       <div class="lp-ctas">
         <a class="btn primary lg" href="#/globe">Explore the live globe <span class="arrow">→</span></a>
         <a class="btn lg ghost-line" href="#/catalog">Search the catalogue</a>
       </div>
+      <div class="lp-prov" id="hProv"></div>
     </div>
     <aside>
       <div class="lp-panel" id="nextPanel"><div class="lp-panel-head"><span>Next close approach</span><span>—</span></div></div>
@@ -173,7 +175,17 @@ function template() {
 function fillHero(root, data, app, timers) {
   const $ = (s) => root.querySelector(s);
   const c = data.counts;
-  $('#hCount').textContent = fmt.int(c.on_orbit);
+  $('#hCount').textContent = fmt.int(c.with_current_orbit);
+  // The headline is what the globe shows: objects with a current orbit. How that relates to the catalogue:
+  get('/provenance').then(({ coverage: cov, sources }) => {
+    const live = sources.filter((x) => ['celestrak_gp', 'spacetrack_gp'].includes(x.source_key) && x.last_success_at);
+    const newest = live.map((x) => x.last_success_at).sort().pop();
+    $('#hCount').textContent = fmt.int(cov.with_orbit);
+    $('#hProv').innerHTML = `Of <b>${fmt.int(cov.objects_in_orbit)}</b> catalogued objects in Earth orbit: <b>${fmt.int(cov.with_orbit)}</b> have a
+      public orbit and move on the globe · <b>${fmt.int(cov.elements_missing)}</b> (mostly debris and rocket bodies) are not in CelesTrak's public
+      groups and need Space-Track · <b>${fmt.int(cov.no_elements_published)}</b> have never had an orbit published.<br>
+      Orbits from ${live.map((x) => esc(x.provider.split(' ')[0] === '18th' ? 'Space-Track' : x.provider)).join(' + ') || 'CelesTrak'}${newest ? `, newest download ${esc(fmt.rel(newest))}` : ''} · catalogue from CelesTrak SATCAT and GCAT.`;
+  }).catch(() => {});
   if (data.ingest_interval_hours) $('#hInterval').textContent = fmt.num(data.ingest_interval_hours, 0);
 
   const ev = data.hot[0] || data.upcoming[0];
@@ -233,13 +245,13 @@ function startHero(C, viewer, root, data, onFirstLoad) {
 
   let first = true;
   let paintFrame = () => {};
-  const cloud = new CatalogCloud(C, viewer, { span: 240, pixelSize: 2.2, onLoad: (cl) => {
+  const cloud = new CatalogCloud(C, viewer, { span: 240, pixelSize: 1.8, onLoad: (cl) => {
     if (first) { first = false; onFirstLoad(cl.order.length); }
     paintFrame();
   } });
 
   const wide = window.innerWidth > 1100;
-  viewer.camera.setView({ destination: C.Cartesian3.fromDegrees(74, 14, wide ? 19_000_000 : 30_000_000) });
+  viewer.camera.setView({ destination: dayView(C, wide ? 19_000_000 : 30_000_000, 30) });
   if (wide) viewer.camera.lookLeft(0.17);   // Earth to the right of the copy
 
   let last = performance.now();
@@ -269,8 +281,8 @@ function startHero(C, viewer, root, data, onFirstLoad) {
     });
   });
 
-  // Featured orbits (ISS and a sun-synchronous watched satellite) glide along a glowing track.
-  const accent = C.Color.fromCssColorString('#ff6b2c');
+  // Featured orbits (ISS and a sun-synchronous watched satellite): the closed orbit, with the satellite riding it.
+  const accent = C.Color.fromCssColorString(ACCENT);
   const featured = [];
   const draw = async (norad, k) => {
     try {
@@ -283,8 +295,8 @@ function startHero(C, viewer, root, data, onFirstLoad) {
         point: { pixelSize: k === 0 ? 7 : 5, color: C.Color.WHITE, outlineColor: accent, outlineWidth: 2 },
         label: k === 0 ? { text: label, font: '600 11px "IBM Plex Mono", monospace', fillColor: C.Color.WHITE,
           pixelOffset: new C.Cartesian2(10, -10), horizontalOrigin: C.HorizontalOrigin.LEFT } : undefined,
-        path: { leadTime: o.periodS, trailTime: o.periodS * 0.12, width: k === 0 ? 3 : 2, resolution: 30,
-          material: new C.PolylineGlowMaterialProperty({ glowPower: 0.2, taperPower: 1, color: accent.withAlpha(k === 0 ? 0.95 : 0.55) }) },
+        polyline: o.teme ? { positions: orbitRing(C, o.teme), width: k === 0 ? 1.8 : 1.3, arcType: C.ArcType.NONE,
+          material: accent.withAlpha(k === 0 ? 0.85 : 0.45) } : undefined,
       });
       featured[k] = { entity, until: C.JulianDate.addSeconds(o.start, o.periodS * 0.95, new C.JulianDate()) };
     } catch { /* decorative */ }
@@ -320,7 +332,7 @@ function startHero(C, viewer, root, data, onFirstLoad) {
   paintFrame = () => {
     const sw = data.space_weather;
     frame.innerHTML = `earth-fixed frame · sgp4 / wgs-72${sw ? `<br>space weather kp ${fmt.num(sw.kp, 1)} · f10.7 ${fmt.num(sw.f107, 0)}` : ''}<br>${fmt.int(cloud.order.length || data.counts.with_current_orbit)} objects · time
-      ${SPEEDS.map((s) => `<button data-speed="${s}" style="pointer-events:auto;background:none;border:0;padding:0 4px;cursor:pointer;font:inherit;color:${s === speed ? '#ff8a55' : 'inherit'}">×${s}</button>`).join('')}`;
+      ${SPEEDS.map((s) => `<button data-speed="${s}" style="pointer-events:auto;background:none;border:0;padding:0 4px;cursor:pointer;font:inherit;color:${s === speed ? '#7dd0e1' : 'inherit'}">×${s}</button>`).join('')}`;
   };
   paintFrame();
   frame.addEventListener('click', (e) => {
@@ -441,8 +453,8 @@ function fillSpectrum(root, data) {
     holds <strong>${fmt.int(peak.n)}</strong> of them;` : ''} the geostationary ring 35,786 km up holds <strong>${fmt.int(geo)}</strong>.`;
   const c = data.counts;
   root.querySelector('#figs').innerHTML = [
-    [c.on_orbit, 'objects in orbit'], [c.debris_on_orbit, 'debris fragments in orbit'],
-    [c.rocket_bodies_on_orbit, 'spent rocket bodies in orbit'], [c.countries, 'countries in the catalogue'],
+    [c.on_orbit, 'catalogued objects in Earth orbit'], [c.debris_on_orbit, 'catalogued debris in orbit'],
+    [c.rocket_bodies_on_orbit, 'catalogued rocket bodies in orbit'], [c.countries, 'countries in the catalogue'],
   ].map(([v, k]) => `<div><div class="v">${fmt.int(v)}</div><div class="k">${k}</div></div>`).join('');
 }
 
@@ -619,7 +631,7 @@ function fillDebris(root, data) {
   }
   years.forEach((d) => {
     const h = (d.n / yTop) * (B - T);
-    svg += `<rect x="${L + (d.year - y0) * bw + 0.5}" y="${B - h}" width="${Math.max(bw - 1, 1)}" height="${h}" fill="${d === peak ? '#ff6b2c' : 'rgba(233,238,244,0.55)'}"><title>${d.year}: ${fmt.int(d.n)}</title></rect>`;
+    svg += `<rect x="${L + (d.year - y0) * bw + 0.5}" y="${B - h}" width="${Math.max(bw - 1, 1)}" height="${h}" fill="${d === peak ? '#3fb6cf' : 'rgba(233,238,244,0.55)'}"><title>${d.year}: ${fmt.int(d.n)}</title></rect>`;
   });
   [y0, 1980, 2000, y1].forEach((yr) => {
     const anchor = yr === y1 ? 'end' : yr === y0 ? 'start' : 'middle';
@@ -641,7 +653,7 @@ function fillCta(root, data, app) {
       <circle cx="360" cy="360" r="92" fill="#0c1016" stroke="rgba(140,170,200,0.25)"/>
       ${[[150, 60, -24, 70], [210, 90, 18, 110], [290, 120, -8, 160]].map(([rx, ry, rot, dur], i) => `
       <g transform="rotate(${rot} 360 360)"><ellipse cx="360" cy="360" rx="${rx}" ry="${ry}" fill="none" stroke="rgba(140,170,200,0.16)"/>
-        <circle r="${i === 0 ? 4 : 3}" fill="${i === 0 ? '#ff6b2c' : '#e9eef4'}">${REDUCED ? '' : `<animateMotion dur="${dur}s" repeatCount="indefinite"
+        <circle r="${i === 0 ? 4 : 3}" fill="${i === 0 ? '#3fb6cf' : '#e9eef4'}">${REDUCED ? '' : `<animateMotion dur="${dur}s" repeatCount="indefinite"
           path="M ${360 - rx} 360 a ${rx} ${ry} 0 1 0 ${rx * 2} 0 a ${rx} ${ry} 0 1 0 ${-rx * 2} 0"/>`}</circle></g>`).join('')}
     </svg>
     <div class="lp-inner" style="position:relative">

@@ -13,10 +13,18 @@
     ow reentry-train | reentry-predict
     ow spacetrack-import --mode watchlist|decayed [--days N] [--limit N]
     ow backup | restore-mysql DIR | restore-mongo DIR
+    ow reconcile [--apply] [--no-git]
+                             compare OrbitWatch with the OrbitalGuard archive (orbitalguard.db and its git
+                             history), find test data, duplicates, orphans and conflicts; --apply fixes them
     ow create-admin          create an Administrator account (prompts for the password)
     ow make-cert             self-signed HTTPS certificate for localhost
     ow serve [--http] [--port N]
+                             HTTPS (cheroot, TLS) on 8443 with http://:8080 redirecting to it;
+                             --http: plain HTTP for development
     ow scheduler             run the periodic jobs (separate process from the web server)
+    ow service               web server + scheduler, supervised (restarted if either crashes)
+    ow verify restore|failover|https|scheduler|all
+                             test the infrastructure for real (isolated restore, MongoDB failover, TLS ...)
 
 Add --cached to setup / load-catalog / ingest to reuse the files in the runtime
 cache instead of downloading again.
@@ -51,7 +59,7 @@ def main(argv=None):
     s = sub.add_parser("mysql-setup")
     s.add_argument("--reset", action="store_true", help="drop and recreate the orbitwatch database")
     for name in ("mongo-init", "mongo-start", "mongo-stop", "mongo-status", "aggregate", "screen", "space-weather",
-                 "reentry-train", "reentry-predict", "backup", "create-admin", "make-cert", "scheduler"):
+                 "reentry-train", "reentry-predict", "backup", "create-admin", "make-cert", "scheduler", "service"):
         sub.add_parser(name)
     for name in ("load-catalog", "ingest"):
         sub.add_parser(name).add_argument("--cached", action="store_true")
@@ -60,12 +68,18 @@ def main(argv=None):
     s.add_argument("--mode", choices=["watchlist", "decayed"], required=True)
     s.add_argument("--days", type=int, default=730)
     s.add_argument("--limit", type=int, default=200)
+    s = sub.add_parser("verify")
+    s.add_argument("what", choices=["restore", "failover", "https", "scheduler", "all"])
+    s = sub.add_parser("reconcile")
+    s.add_argument("--apply", action="store_true", help="make the changes (default: report only)")
+    s.add_argument("--no-git", action="store_true", help="only the working copy of orbitalguard.db")
     for name in ("restore-mysql", "restore-mongo"):
         sub.add_parser(name).add_argument("directory")
     s = sub.add_parser("serve")
     s.add_argument("--http", action="store_true", help="plain HTTP (development only)")
-    s.add_argument("--port", type=int, default=5000)
+    s.add_argument("--port", type=int, default=None, help="default 8443 (HTTPS) or 5000 (--http)")
     s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--no-redirect", action="store_true", help="do not listen on the HTTP redirect port")
     args = p.parse_args(argv)
 
     setup_logging(args.cmd)
@@ -128,6 +142,19 @@ def main(argv=None):
     elif args.cmd == "backup":
         from orbitwatch.jobs import backup
         return _job("backup", backup.run)
+    elif args.cmd == "verify":
+        from orbitwatch import verify
+        fns = {"restore": verify.verify_restore, "failover": verify.verify_failover, "https": verify.verify_https,
+               "scheduler": verify.verify_scheduler}
+        passed = True
+        for name in (fns if args.what == "all" else [args.what]):
+            res = fns[name]()
+            passed &= bool(res.get("passed"))
+            print(json.dumps(res, indent=2, default=str))
+        return 0 if passed else 1
+    elif args.cmd == "reconcile":
+        from orbitwatch import reconcile
+        return _job("reconcile", reconcile.run, apply=args.apply, include_git=not args.no_git)
     elif args.cmd == "restore-mysql":
         from orbitwatch.jobs import backup
         backup.restore_mysql(args.directory)
@@ -140,15 +167,11 @@ def main(argv=None):
         from orbitwatch.certs import make_cert
         print(make_cert())
     elif args.cmd == "serve":
-        from orbitwatch.web import create_app
-        from orbitwatch.certs import make_cert
-        if args.http:
-            os.environ["ORBITWATCH_HTTP"] = "1"
-        app = create_app(https=not args.http)
-        ssl_context = None if args.http else make_cert()
-        scheme = "http" if args.http else "https"
-        print(f"OrbitWatch on {scheme}://{args.host}:{args.port}")
-        app.run(host=args.host, port=args.port, ssl_context=ssl_context, threaded=True, use_reloader=False)
+        from orbitwatch import server
+        server.serve(host=args.host, port=args.port, http=args.http, redirect_port=0 if args.no_redirect else None)
+    elif args.cmd == "service":
+        from orbitwatch import server
+        server.service()
     elif args.cmd == "scheduler":
         from orbitwatch.jobs.scheduler import run_scheduler
         run_scheduler()

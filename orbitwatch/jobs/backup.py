@@ -67,13 +67,37 @@ def backup_mongo(target):
     return counts
 
 
+# Tables written continuously while the system runs: their counts may differ by a few rows between the
+# count below and mysqldump's snapshot a moment later. Every other table must match exactly after a restore.
+VOLATILE_TABLES = {"job_run", "event_log", "rate_limit_event", "scheduler_job", "scheduler_heartbeat", "email_outbox",
+                   "space_weather", "data_source"}
+
+
+def _table_counts():
+    rows = db.query("jobs", "SELECT TABLE_NAME AS t FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s "
+                            "AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME", (config.MYSQL_DATABASE,))
+    return {r["t"]: db.query_one("jobs", f"SELECT COUNT(*) AS n FROM `{r['t']}`")["n"] for r in rows}
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def run(ctx):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     target = config.BACKUP_DIR / stamp
     target.mkdir(parents=True)
+    table_counts = _table_counts()
     mysql_bytes = backup_mysql(target)
     mongo_counts = backup_mongo(target)
-    manifest = {"created_utc": stamp, "mysql_dump_bytes": mysql_bytes, "mongo_documents": mongo_counts}
+    manifest = {"created_utc": stamp, "mysql_dump_bytes": mysql_bytes, "mysql_rows": table_counts,
+                "volatile_tables": sorted(VOLATILE_TABLES), "mongo_documents": mongo_counts,
+                "sha256": {f.name: _sha256(f) for f in sorted(target.iterdir()) if f.is_file()}}
     (target / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     keep = int(db.get_config().get("backup_keep", 7))

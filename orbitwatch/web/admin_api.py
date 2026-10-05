@@ -57,6 +57,7 @@ CONFIG_RULES = {
     "screening_step_seconds": _positive(10, 120), "screening_max_epoch_age_days": _positive(1, 90),
     "ingest_interval_hours": _positive(2, 48), "celestrak_groups": _groups, "catalog_refresh_cron": _cron,
     "aggregation_cron": _cron, "reentry_cron": _cron, "backup_cron": _cron, "backup_keep": _positive(1, 60),
+    "reentry_train_cron": _cron, "spacetrack_daily_cron": _cron, "spacetrack_weekly_cron": _cron,
 }
 
 
@@ -265,8 +266,12 @@ def put_config():
 # ---- jobs and logs ------------------------------------------------------
 
 def _job_functions():
+    from orbitwatch import notify, reconcile
     from orbitwatch.jobs import aggregate, backup, catalog, ingest, reentry, screening, spacetrack, spaceweather
     return {
+        "notify": (notify.queue_all, {}), "email_dispatch": (notify.dispatch, {}),
+        "housekeeping": (notify.housekeeping, {}),
+        "reconcile": (reconcile.run, {"apply": False, "include_git": True}),
         "space_weather": (spaceweather.run, {}),
         "catalog": (catalog.run, {}), "ingest": (ingest.run, {}), "screening": (screening.run, {}),
         "aggregation": (aggregate.run, {}), "reentry_train": (reentry.train, {}),
@@ -298,8 +303,11 @@ def run_job_now(name):
     fn, kwargs = fns[name]
     data = request.get_json(silent=True) or {}
     if name == "spacetrack_import":
-        kwargs = {"mode": data.get("mode", "watchlist") if data.get("mode") in ("watchlist", "decayed") else "watchlist",
-                  "days": int(data.get("days", 730)), "limit": int(data.get("limit", 200))}
+        mode = data.get("mode") if data.get("mode") in ("watchlist", "decaying", "decayed", "decay") else "watchlist"
+        kwargs = {"mode": mode, "days": int(data.get("days", 60 if mode == "decay" else 730)),
+                  "limit": int(data.get("limit", 200))}
+    if name == "reconcile":
+        kwargs = {"apply": data.get("apply") is True, "include_git": True}
     threading.Thread(target=run_job, args=(name, fn), kwargs={"triggered_by": "manual", "retries": 0, **kwargs},
                      daemon=True, name=f"job-{name}").start()
     return ok({"started": name, "at": orbital.now_utc().isoformat() + "Z"}, 202)
@@ -327,3 +335,29 @@ def logs():
 def mongo_status():
     from orbitwatch import mongo_cluster
     return ok(mongo_cluster.status())
+
+
+@bp.get("/scheduler")
+@role_required("admin")
+def scheduler_status():
+    from orbitwatch import notify
+    from orbitwatch.jobs import scheduler
+    st = scheduler.status()
+    return ok({"running": st["running"], "heartbeat": clean(st["heartbeat"] or {}), "jobs": clean(st["jobs"]),
+               "email_queue": clean(notify.due_summary() or {}),
+               "recent_email": clean(db.query("admin", "SELECT email_id, kind, to_address, status, attempts, last_error, "
+                                                       "created_at, sent_at FROM email_outbox ORDER BY email_id DESC "
+                                                       "LIMIT 20"))})
+
+
+@bp.get("/reconcile/latest")
+@role_required("admin")
+def reconcile_latest():
+    """The most recent reconciliation report (runtime/reports)."""
+    import json as _json
+    from orbitwatch import reconcile
+    files = sorted(reconcile.REPORT_DIR.glob("reconcile-*.json"))
+    if not files:
+        return ok({"report": None})
+    data = _json.loads(files[-1].read_text(encoding="utf-8"))
+    return ok({"report": data, "file": files[-1].name, "count": len(files)})

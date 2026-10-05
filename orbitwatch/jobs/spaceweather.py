@@ -26,5 +26,8 @@ def run(ctx):
                                 fetched_at = CURRENT_TIMESTAMP""",
                (sw["observed_at"], sw["kp"], sw["ap"], sw["f107"], sw["activity"], sw["drag_scalar"],
                 sw["source"], sw["live"]))
+    from orbitwatch.jobs import sources
+    sources.record_source("noaa_swpc", "ok" if sw["live"] else "error", 1,
+                          f"Kp {sw['kp']:.2f}, F10.7 {sw['f107']:.0f} sfu" + ("" if sw["live"] else " (fallback values)"))
     return 1, (f"Kp {sw['kp']:.2f} ({sw['activity'].lower()}), Ap {sw['ap']:.0f}, F10.7 {sw['f107']:.0f} sfu, "
                f"drag scalar {sw['drag_scalar']:.2f} — {sw['source']}")

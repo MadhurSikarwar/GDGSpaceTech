@@ -14,9 +14,10 @@ from orbitwatch import config
 log = logging.getLogger(__name__)
 
 SCHEMA_FILES = ["01_schema.sql", "02_routines.sql", "03_views.sql", "04_security.sql", "05_seed.sql",
-                "06_extensions.sql"]
-# Safe on an existing database; 06 adds the OrbitalGuard-derived features to an older install.
-REAPPLY_FILES = ["02_routines.sql", "03_views.sql", "04_security.sql", "06_extensions.sql"]
+                "06_extensions.sql", "07_operations.sql"]
+# Safe on an existing database; 06 adds the OrbitalGuard-derived features and 07 the operations
+# layer (provenance, approvals, demo, notifications, model registry, event log) to an older install.
+REAPPLY_FILES = ["02_routines.sql", "03_views.sql", "04_security.sql", "06_extensions.sql", "07_operations.sql"]
 
 
 def split_sql(text):

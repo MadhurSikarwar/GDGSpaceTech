@@ -56,6 +56,28 @@ GCAT_BASE_URL = "https://planet4589.org/space/gcat/tsv"
 SPACETRACK_BASE_URL = "https://www.space-track.org"
 HTTP_USER_AGENT = "OrbitWatch/1.0 (RVCE DBMS project; scheduled, rate-limited)"
 
+# ---- Web ----------------------------------------------------------------
+# Links in e-mails (password reset, alerts) always use this base URL, never the
+# request's Host header, so a forged Host cannot redirect a reset link.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://localhost:8443").rstrip("/")
+HTTPS_PORT = int(os.getenv("ORBITWATCH_HTTPS_PORT", "8443"))
+HTTP_REDIRECT_PORT = int(os.getenv("ORBITWATCH_HTTP_PORT", "8080"))
+
+# ---- E-mail (SMTP) --------------------------------------------------------
+# Only SMTP_USERNAME and SMTP_PASSWORD are required (Gmail: an app password).
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_SECURITY = os.getenv("SMTP_SECURITY", "starttls" if SMTP_PORT != 465 else "ssl").lower()  # starttls|ssl|none
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USERNAME)
+
+
+def smtp_configured():
+    # A local relay without authentication (SMTP_SECURITY=none, e.g. a test sink) needs no credentials.
+    return bool(SMTP_USERNAME and SMTP_PASSWORD) or (SMTP_SECURITY == "none" and bool(os.getenv("SMTP_HOST")))
+
+
 # Development switch: reuse the downloads in CACHE_DIR instead of hitting
 # CelesTrak again (CelesTrak blocks clients that re-download unchanged data).
 USE_CACHE = os.getenv("ORBITWATCH_USE_CACHE", "0").lower() in ("1", "true", "yes")

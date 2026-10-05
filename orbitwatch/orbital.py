@@ -83,13 +83,75 @@ def parse_omm(rec):
     return out
 
 
+def _tle_exp(field):
+    """TLE 'assumed decimal point, signed exponent' notation: ' 12345-4' -> 0.12345e-4."""
+    s = field.strip()
+    if not s or s in ("0", "00000-0", "00000+0", "-00000-0"):
+        return 0.0
+    sign = -1.0 if s[0] == "-" else 1.0
+    s = s.lstrip("+-")
+    mantissa, exp = s[:-2], s[-2:]
+    return sign * float(f"0.{mantissa}") * 10.0 ** int(exp)
+
+
+def tle_checksum_ok(line):
+    digits = sum(int(c) for c in line[:68] if c.isdigit()) + line[:68].count("-")
+    return len(line) >= 69 and line[68].isdigit() and digits % 10 == int(line[68])
+
+
+def parse_tle(line1, line2, name=None):
+    """A two-line element set as the same dict parse_omm returns (TLE fields are fixed-column)."""
+    line1, line2 = line1.rstrip(), line2.rstrip()
+    if not (line1.startswith("1 ") and line2.startswith("2 ")):
+        raise ValueError("not a two-line element set")
+    if not (tle_checksum_ok(line1) and tle_checksum_ok(line2)):
+        raise ValueError("TLE checksum mismatch")
+    norad = int(line1[2:7])
+    if int(line2[2:7]) != norad:
+        raise ValueError("TLE lines belong to different objects")
+    yy, day = int(line1[18:20]), float(line1[20:32])
+    epoch = datetime(2000 + yy if yy < 57 else 1900 + yy, 1, 1) + timedelta(days=day - 1.0)
+    intl = line1[9:17].strip()
+    intl_designator = None
+    if len(intl) >= 5 and intl[:5].isdigit():
+        year = int(intl[:2])
+        intl_designator = f"{2000 + year if year < 57 else 1900 + year}-{intl[2:]}"
+    set_no = line1[64:68].strip()
+    rev = line2[63:68].strip()
+    out = {
+        "norad_id": norad,
+        "name": (name or "").strip() or f"NORAD {norad}",
+        "intl_designator": intl_designator,
+        "epoch": epoch,
+        "mean_motion": float(line2[52:63]),
+        "eccentricity": float("0." + line2[26:33].strip()),
+        "inclination": float(line2[8:16]),
+        "raan": float(line2[17:25]),
+        "arg_perigee": float(line2[34:42]),
+        "mean_anomaly": float(line2[43:51]),
+        "bstar": _tle_exp(line1[53:61]),
+        "mean_motion_dot": float(line1[33:43]),
+        "mean_motion_ddot": _tle_exp(line1[44:52]),
+        "element_set_no": int(set_no) if set_no.isdigit() else None,
+        "rev_at_epoch": int(rev) if rev.isdigit() else None,
+    }
+    if out["mean_motion"] <= 0 or not (0 <= out["eccentricity"] < 1):
+        raise ValueError(f"unusable element set for {norad}")
+    out.update(derived_altitudes(out["mean_motion"], out["eccentricity"]))
+    return out
+
+
 def satrec_from_elements(el):
     """SGP4 record from a dict holding norad_id, epoch and the ELEMENT_FIELDS."""
     sat = Satrec()
     epoch = (parse_epoch(el["epoch"]) - _EPOCH0).total_seconds() / 86400.0
     deg = math.pi / 180.0
+    try:
+        satnum = min(int(el["norad_id"]), 339999)
+    except (TypeError, ValueError):
+        satnum = 0          # synthetic demo objects carry a 'SYN-...' designation instead of a NORAD number
     sat.sgp4init(
-        WGS72, "i", min(int(el["norad_id"]), 339999),  # satnum is only a label inside SGP4
+        WGS72, "i", satnum,  # satnum is only a label inside SGP4
         epoch,
         float(el["bstar"]),
         float(el["mean_motion_dot"]) / _NDOT_UNITS,

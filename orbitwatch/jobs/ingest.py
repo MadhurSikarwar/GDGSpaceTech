@@ -1,4 +1,12 @@
-"""Automated ingestion (SRS 3.2): CelesTrak element sets -> MongoDB history + MySQL Current_Orbit.
+"""Automated ingestion (SRS 3.2): CelesTrak + Space-Track element sets -> MongoDB history + MySQL Current_Orbit.
+
+* CelesTrak's groups (active satellites, selected debris) are always fetched.
+  When Space-Track credentials are configured, Space-Track's GP catalogue (every
+  object on orbit, including the debris and rocket bodies CelesTrak does not
+  publish) is merged in, at most once an hour. Per object the newest epoch wins.
+* Every current orbit records its source, when it was downloaded and the
+  download it came from (provenance), and each source's freshness is kept in
+  MySQL data_source.
 
 * Every element set goes into MongoDB orbit_history (sharded on norad_id).
   The unique {norad_id, epoch} index makes the history append-only and
@@ -61,7 +69,8 @@ def store_history(element_sets, source, run_id):
     docs = []
     for el in element_sets:
         doc = {k: el[k] for k in HISTORY_FIELDS}
-        doc.update(norad_id=el["norad_id"], epoch=el["epoch"].replace(tzinfo=timezone.utc), source=source,
+        doc.update(norad_id=el["norad_id"], epoch=el["epoch"].replace(tzinfo=timezone.utc),
+                   source=el.get("source") if el.get("source") in ("CelesTrak", "Space-Track") else source,
                    download_id=el.get("download_id"), run_id=run_id, ingested_at=now, raw=el.get("raw"))
         docs.append(doc)
     inserted = duplicates = 0
@@ -80,7 +89,11 @@ def store_history(element_sets, source, run_id):
 
 
 def upsert_current_orbits(cur, element_sets, source):
-    """Write the newest element set of each object to current_orbit; returns (new, newer, unchanged)."""
+    """Write the newest element set of each object to current_orbit; returns (new, newer, unchanged).
+
+    Each element set's own source ('CelesTrak' / 'Space-Track') is kept when present, with the time it
+    was downloaded and its download id, so every current orbit can say where it came from.
+    """
     ids = [el["norad_id"] for el in element_sets]
     existing = {}
     for i in range(0, len(ids), 5000):
@@ -97,10 +110,12 @@ def upsert_current_orbits(cur, element_sets, source):
             newer += 1
         else:
             continue
+        src = el.get("source") if el.get("source") in ("CelesTrak", "Space-Track") else source
         rows.append((el["norad_id"], el["epoch"], *(el[f] for f in orbital.ELEMENT_FIELDS),
-                     el["element_set_no"], el["rev_at_epoch"], source))
+                     el["element_set_no"], el["rev_at_epoch"], src, el.get("fetched_at"), el.get("download_id")))
     cols = ("mean_motion", "eccentricity", "inclination", "raan", "arg_perigee", "mean_anomaly", "bstar",
-            "mean_motion_dot", "mean_motion_ddot", "element_set_no", "rev_at_epoch", "source")
+            "mean_motion_dot", "mean_motion_ddot", "element_set_no", "rev_at_epoch", "source", "fetched_at",
+            "download_id")
     # Only a newer epoch replaces the stored one; epoch is assigned last because
     # MySQL evaluates ON DUPLICATE KEY assignments left to right.
     updates = ", ".join(f"{c} = IF(n.epoch > current_orbit.epoch, n.{c}, current_orbit.{c})" for c in cols)
@@ -131,10 +146,34 @@ def ensure_objects(cur, element_sets):
     return len(rows), {n for n, d in known.items() if d is not None}
 
 
+def _merge(latest, el):
+    prev = latest.get(el["norad_id"])
+    if prev is None or el["epoch"] > prev["epoch"]:
+        latest[el["norad_id"]] = el
+
+
+CELESTRAK_MIN_INTERVAL_MIN = 120   # CelesTrak asks clients not to re-download unchanged data within two hours
+
+
+def celestrak_due():
+    row = db.query_one("jobs", "SELECT TIMESTAMPDIFF(MINUTE, last_success_at, NOW(3)) AS age "
+                               "FROM data_source WHERE source_key = 'celestrak_gp'")
+    return config.USE_CACHE or not row or row["age"] is None or row["age"] >= CELESTRAK_MIN_INTERVAL_MIN
+
+
 def run(ctx):
+    from orbitwatch.jobs import spacetrack
+    from orbitwatch.jobs.runner import SkipJob
     cfg = db.get_config()
     latest, failures, downloads, total = {}, [], 0, 0
-    for label, url in celestrak_sets(cfg):
+    fetched = datetime.now(timezone.utc).replace(tzinfo=None)
+    ct_ok = 0
+    ct_due = celestrak_due()
+    st_due = spacetrack.configured() and spacetrack.gp_due()
+    if not ct_due and not st_due:
+        raise SkipJob(f"CelesTrak was fetched less than {CELESTRAK_MIN_INTERVAL_MIN} min ago (provider policy)"
+                      + ("" if spacetrack.configured() else "; Space-Track not configured"))
+    for label, url in (celestrak_sets(cfg) if ct_due else []):
         try:
             text, dl = sources.fetch(url, f"celestrak_gp:{label}", f"gp_{label}.json", ctx.run_id)
         except RuntimeError as exc:
@@ -152,12 +191,35 @@ def run(ctx):
             except (KeyError, ValueError):
                 continue
             parsed += 1
-            el["raw"], el["download_id"] = rec, dl
-            prev = latest.get(el["norad_id"])
-            if prev is None or el["epoch"] > prev["epoch"]:
-                latest[el["norad_id"]] = el
+            el.update(raw=rec, download_id=dl, source="CelesTrak", fetched_at=fetched)
+            _merge(latest, el)
         total += parsed
+        ct_ok += parsed
         sources.update_download(dl, records=len(data), parsed=parsed)
+    if ct_due:
+        sources.record_source("celestrak_gp", "ok" if downloads else "error", ct_ok,
+                              f"{ct_ok} element sets from {downloads} groups"
+                              + (f"; failed: {'; '.join(failures)}" if failures else ""))
+
+    st_note = "Space-Track: not configured"
+    if spacetrack.configured():
+        if spacetrack.gp_due():
+            try:
+                st_sets, _ = spacetrack.fetch_catalogue(ctx.run_id)
+                for el in st_sets:
+                    _merge(latest, el)
+                total += len(st_sets)
+                downloads += 1
+                st_note = f"Space-Track GP catalogue: {len(st_sets)} element sets"
+                sources.record_source("spacetrack_gp", "ok", len(st_sets), st_note)
+            except Exception as exc:  # noqa: BLE001 - CelesTrak data is still stored
+                failures.append(f"Space-Track GP: {exc}")
+                st_note = f"Space-Track GP failed: {exc}"
+                sources.record_source("spacetrack_gp", "error", message=str(exc))
+        else:
+            st_note = "Space-Track GP: fetched less than an hour ago (provider limit)"
+    else:
+        sources.record_source("spacetrack_gp", "skipped", message="credentials not configured")
     if not latest:
         raise RuntimeError("no element sets downloaded: " + "; ".join(failures))
 
@@ -167,14 +229,18 @@ def run(ctx):
     with db.mysql_conn("jobs") as conn:
         cur = conn.cursor()
         created, decayed = ensure_objects(cur, sets)
-        live = [el for el in sets if el["norad_id"] not in decayed]
+        cur.execute("SELECT norad_id FROM space_object WHERE NOT in_earth_orbit")
+        not_orbiting = decayed | {r[0] for r in cur.fetchall()}
+        live = [el for el in sets if el["norad_id"] not in not_orbiting]
         new, newer, unchanged = upsert_current_orbits(cur, live, "CelesTrak")
         conn.commit()
         cur.close()
 
-    msg = (f"{total} element sets from {downloads} downloads ({len(sets)} objects); history: {inserted} new, "
-           f"{duplicates} already stored; current_orbit: {new} new, {newer} newer, {unchanged} unchanged; "
-           f"{created} new catalogue objects")
+    by_source = {s: sum(1 for el in sets if el["source"] == s) for s in ("CelesTrak", "Space-Track")}
+    msg = (f"{total} element sets from {downloads} downloads ({len(sets)} objects: {by_source['CelesTrak']} newest from "
+           f"CelesTrak, {by_source['Space-Track']} from Space-Track); history: {inserted} new, {duplicates} already "
+           f"stored; current_orbit: {new} new, {newer} newer, {unchanged} unchanged; {created} new catalogue objects; "
+           f"{st_note}")
     if failures:
         msg += "; FAILED downloads: " + "; ".join(failures)
     return len(sets), msg

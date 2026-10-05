@@ -2,7 +2,7 @@
 // a table view with the exact numbers and a CSV export.
 import { csvUrl, get, qs } from '../api.js';
 import { barChart, destroyAll, lineChart, slot, typeColor } from '../charts.js';
-import { empty, errorBox, esc, fmt, h, isoInput, loading, objLink, table, typeTag } from '../ui.js';
+import { empty, errorBox, esc, fmt, h, isoInput, loading, objLink, table, typeTag, unavailable } from '../ui.js';
 
 const TABS = [
   ['regions', 'Objects per region'],
@@ -221,16 +221,37 @@ const REPORTS = {
   },
 
   async reentry(body) {
-    const { items } = await get('/reentry?limit=500');
+    const [{ items }, st] = await Promise.all([get('/reentry?limit=500'), get('/reentry/models')]);
     const card = h(`<section class="card flush"><div class="card-head"><div><h2>Re-entry predictions</h2>
-      <div class="sub">Gradient-boosted regression trained on objects that already re-entered; quantile models give the 10–90 % interval</div></div></div><div></div></section>`);
+      <div class="sub">Gradient-boosted regression trained only on objects that already re-entered; quantile models give the 10–90 % interval</div></div></div><div></div></section>`);
     body.appendChild(card);
-    if (!items.length) { card.lastElementChild.innerHTML = empty('No predictions yet', ' Train the model (Admin → Jobs → reentry_train) after importing re-entered objects’ history.'); return; }
-    card.lastElementChild.appendChild(table([
-      { label: 'Object', render: (r) => objLink(r.norad_id, r.name) }, { label: 'Type', render: (r) => typeTag(r.object_type) },
-      { label: 'Altitude', num: true, render: (r) => fmt.km(r.mean_altitude_km, 0) },
-      { label: 'Days left', num: true, render: (r) => fmt.num(r.days_remaining, 0) },
-      { label: '10–90 %', num: true, render: (r) => `${fmt.num(r.lower_days, 0)}–${fmt.num(r.upper_days, 0)}` },
-      { label: 'Expected', render: (r) => fmt.date(r.predicted_decay_date) }, { label: 'Model', render: (r) => esc(r.model_version) }], items));
+    const out = card.lastElementChild;
+    if (!st.available || !items.length) {
+      const m = st.models[0];
+      out.innerHTML = `<div style="padding:16px 20px">${unavailable('Predictions unavailable',
+        `<p style="margin:0 0 8px">No model has passed evaluation on held-out re-entries, so OrbitWatch shows no lifetime estimates instead of guessing.</p>
+         ${m ? `<p class="small muted" style="margin:0">Latest attempt <span class="mono">${esc(m.model_version)}</span> (${esc(m.status)}): ${esc(m.notes || '')}</p>` : '<p class="small muted" style="margin:0">No model has been trained yet.</p>'}`)}</div>`;
+    } else {
+      out.appendChild(table([
+        { label: 'Object', render: (r) => objLink(r.norad_id, r.name) }, { label: 'Type', render: (r) => typeTag(r.object_type) },
+        { label: 'Altitude', num: true, render: (r) => fmt.km(r.mean_altitude_km, 0) },
+        { label: 'Days left', num: true, render: (r) => fmt.num(r.days_remaining, 0) },
+        { label: '10–90 %', num: true, render: (r) => `${fmt.num(r.lower_days, 0)}–${fmt.num(r.upper_days, 0)}` },
+        { label: 'Expected', render: (r) => fmt.date(r.predicted_decay_date) }, { label: 'Model', render: (r) => esc(r.model_version) }], items));
+    }
+    const reg = h(`<section class="card flush" style="margin-top:14px"><div class="card-head"><div><h2>Model registry</h2>
+      <div class="sub">every trained model, its data, its held-out score and whether it passed the gate (≥ ${st.gate.min_objects} re-entered objects;
+      median relative error &lt; ${st.gate.max_median_relative_error}; interval coverage ≥ ${st.gate.min_interval_coverage})</div></div></div><div></div></section>`);
+    body.appendChild(reg);
+    if (!st.models.length) { reg.lastElementChild.innerHTML = empty('No model trained yet'); return; }
+    reg.lastElementChild.appendChild(table([
+      { label: 'Version', render: (m) => `<span class="mono">${esc(m.model_version)}</span>` },
+      { label: 'Status', render: (m) => `<span class="tag ${m.status === 'active' ? 'ok' : m.status === 'rejected' ? 'warn' : 'plain'}">${esc(m.status)}</span>` },
+      { label: 'Trained', render: (m) => fmt.dt(m.trained_at) },
+      { label: 'Train objects', num: true, render: (m) => fmt.int(m.training_objects) },
+      { label: 'Test objects', num: true, render: (m) => fmt.int(m.test_objects) },
+      { label: 'Median error', num: true, render: (m) => (m.median_ae_days == null ? '—' : `${fmt.num(m.median_ae_days, 1)} d`) },
+      { label: 'Coverage', num: true, render: (m) => (m.interval_coverage == null ? '—' : `${fmt.num(100 * m.interval_coverage, 0)} %`) },
+      { label: 'Notes', render: (m) => `<div class="small" style="max-width:440px">${esc(m.notes || '')}</div>` }], st.models));
   },
 };

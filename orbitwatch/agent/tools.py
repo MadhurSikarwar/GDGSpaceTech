@@ -35,9 +35,12 @@ TOOL_SCHEMAS = [
 
 
 class AgentTools:
-    def __init__(self, event_id, account):
+    synthetic = False
+
+    def __init__(self, event_id, account, min_miss_km=None):
         self.event_id = event_id
         self.account = account
+        self.min_miss_km = float(min_miss_km) if min_miss_km else None
         self.cache = {}
         self.candidates = {}
         self.evaluations = {}
@@ -99,7 +102,7 @@ class AgentTools:
                     "perigee_km": round(float(o["perigee_km"]), 1) if o["perigee_km"] is not None else None,
                     "apogee_km": round(float(o["apogee_km"]), 1) if o["apogee_km"] is not None else None,
                     "element_set_age_h": round(abs((st["tca"] - o["epoch"]).total_seconds()) / 3600.0, 1) if o["epoch"] else None}
-        out = {"event_id": ev["event_id"], "tca_utc": st["tca"].isoformat() + "Z",
+        out = {"event_id": ev["event_id"], "synthetic": self.synthetic, "tca_utc": st["tca"].isoformat() + "Z",
                "hours_to_tca": round((st["tca"] - now).total_seconds() / 3600.0, 2),
                "miss_distance_km": round(st["miss_km"], 3), "relative_velocity_km_s": round(st["rel_vel_kms"], 3),
                "screening_risk_level": ev["risk_level"], "primary": obj(objs["primary"]), "secondary": obj(objs["secondary"])}
@@ -182,7 +185,7 @@ class AgentTools:
             if burn < now + timedelta(minutes=MIN_LEAD_MIN):
                 continue
             k += 1
-            c = maneuver.optimise(enc, dt)
+            c = maneuver.optimise(enc, dt, min_miss_km=self.min_miss_km)
             c.update(candidate_id=f"M{k}", burn_time_utc=burn.isoformat() + "Z", lead_time_min=round(dt / 60.0, 1),
                      half_orbits_before_tca=half_orbits)
             self.candidates[c["candidate_id"]] = {**c, "_burn": burn}
@@ -212,6 +215,8 @@ class AgentTools:
             "lead_time_ok": c["_burn"] >= now + timedelta(minutes=MIN_LEAD_MIN),
             "uplink_window_before_burn": bool(uplink),
         }
+        if self.min_miss_km:
+            checks["meets_reviewer_min_miss"] = c["miss_after_km"] >= self.min_miss_km
         violations = [k for k, ok in checks.items() if not ok]
         out = {"candidate_id": candidate_id, "feasible": not violations, "checks": checks, "violations": violations,
                "dv_mps": c["dv_mps"], "pc_after": c["pc_after"], "sma_drift_km": c["sma_drift_km"],
@@ -233,3 +238,34 @@ class AgentTools:
             return {"error": str(exc), "summary": f"bad arguments for {name}: {exc}"}
         except ValueError as exc:
             return {"error": str(exc), "summary": f"{name} failed: {exc}"}
+
+
+class DemoAgentTools(AgentTools):
+    """The same tools for a SYNTHETIC demo close approach: a real catalogue object (primary) against a
+    synthetic debris object from the demo tables (secondary). Everything downstream is unchanged."""
+    synthetic = True
+
+    def _event(self):
+        if "event" not in self.cache:
+            ev = db.query_one(self.account, """
+                SELECT de.demo_event_id AS event_id, de.time_of_closest_approach, de.miss_distance_km,
+                       de.relative_velocity, de.risk_level, de.target_norad AS primary_norad,
+                       dob.designation AS secondary_norad, de.demo_object_id
+                  FROM demo_event de JOIN demo_object dob ON dob.demo_object_id = de.demo_object_id
+                 WHERE de.demo_event_id = %s""", (self.event_id,))
+            if ev is None:
+                raise ValueError(f"no synthetic close approach #{self.event_id}")
+            primary = db.query_one(self.account, f"""
+                SELECT c.norad_id, c.name, c.object_type, c.status, c.org_name, c.country_name, c.region_name,
+                       co.epoch, {', '.join('co.' + f for f in orbital.ELEMENT_FIELDS)}, co.perigee_km, co.apogee_km,
+                       co.period_min
+                  FROM v_object_catalog c LEFT JOIN current_orbit co ON co.norad_id = c.norad_id
+                 WHERE c.norad_id = %s""", (ev["primary_norad"],))
+            syn = db.query_one(self.account, f"""SELECT designation, name, epoch, {', '.join(orbital.ELEMENT_FIELDS)}
+                                                  FROM demo_object WHERE demo_object_id = %s""", (ev["demo_object_id"],))
+            alt = orbital.derived_altitudes(syn["mean_motion"], syn["eccentricity"])
+            secondary = {**syn, "norad_id": syn["designation"], "object_type": "Debris", "status": "SYNTHETIC",
+                         "org_name": None, "country_name": None, "region_name": None,
+                         "perigee_km": alt["perigee_km"], "apogee_km": alt["apogee_km"], "period_min": alt["period_min"]}
+            self.cache["event"], self.cache["objects"] = ev, {"primary": primary, "secondary": secondary}
+        return self.cache["event"], self.cache["objects"]

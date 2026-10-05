@@ -20,7 +20,8 @@ def current_user():
     uid = session.get("user_id")
     if uid:
         row = auth.refresh(uid)
-        if row and row["is_active"]:
+        # A password change or reset bumps session_version: every older session ends here.
+        if row and row["is_active"] and session.get("sv", 1) == row["session_version"]:
             g.user = {"user_id": row["user_id"], "name": row["name"], "email": row["email"], "role": row["role"]}
         else:
             session.clear()
@@ -78,9 +79,12 @@ def to_json(value):
 
 
 def clean(rows):
+    """JSON-ready copy of a row, a list of rows, or any nesting of them (ISO 8601 UTC datetimes throughout)."""
     if isinstance(rows, dict):
-        return {k: to_json(v) for k, v in rows.items()}
-    return [{k: to_json(v) for k, v in r.items()} for r in rows]
+        return {k: clean(v) if isinstance(v, (dict, list, tuple)) else to_json(v) for k, v in rows.items()}
+    if isinstance(rows, (list, tuple)):
+        return [clean(v) if isinstance(v, (dict, list, tuple)) else to_json(v) for v in rows]
+    return to_json(rows)
 
 
 def ok(payload=None, status=200):

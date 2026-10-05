@@ -367,4 +367,7 @@ def run(ctx):
            f"{len(rows['vehicles'])} vehicles, {len(rows['missions'])} missions, {len(rows['parents'])} parent links, "
            f"{len(rows['ownership'])} ownership periods; {raw} raw records versioned in MongoDB"
            + (f"; watchlist seeded with {seeded} objects" if seeded else ""))
+    sources.record_source("celestrak_satcat", "ok", len(satcat), f"{len(satcat)} catalogue records")
+    sources.record_source("gcat", "ok", len(gcat["satcat"]), f"{len(rows['launches'])} launches, "
+                                                          f"{len(rows['organisations'])} organisations")
     return len(rows["objects"]), msg

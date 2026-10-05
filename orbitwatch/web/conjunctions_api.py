@@ -60,7 +60,8 @@ def list_events():
 
 def _orbit(acct, norad_id):
     return db.query_one(acct, f"SELECT norad_id, epoch, {', '.join(orbital.ELEMENT_FIELDS)}, perigee_km, apogee_km, "
-                              "inclination, period_min FROM current_orbit WHERE norad_id = %s", (norad_id,))
+                              "inclination, period_min, source, fetched_at FROM current_orbit WHERE norad_id = %s",
+                        (norad_id,))
 
 
 @bp.get("/<int:event_id>")
@@ -75,7 +76,9 @@ def event_detail(event_id):
         info = db.query_one(acct, "SELECT norad_id, name, object_type, status, country_name, org_name, region_name "
                                   "FROM v_object_catalog WHERE norad_id = %s", (n,))
         objs[role] = {**clean(info), "orbit": clean(_orbit(acct, n) or {})}
-    return ok({"event": clean(ev), **objs})
+    archived = db.query_one(acct, "SELECT * FROM archive_risk_assessment WHERE event_id = %s", (event_id,)) \
+        if ev.get("origin") == "orbitalguard-archive" else None
+    return ok({"event": clean(ev), **objs, "archive_risk": clean(archived) if archived else None})
 
 
 @bp.get("/<int:event_id>/track")

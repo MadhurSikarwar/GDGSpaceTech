@@ -450,15 +450,20 @@ def test_tc63_configuration_validation(admin):
 
 
 def test_tc64_jobs_logs_and_cluster(site, admin):
+    before = one(site, "SELECT COALESCE(MAX(run_id), 0) AS n FROM job_run WHERE job_name = 'space_weather'")["n"]
     r = admin.post("/api/admin/jobs/space_weather/run", headers=H)
     assert r.status_code == 202
-    for _ in range(60):
-        jobs = admin.get("/api/admin/jobs").json
-        if not jobs["running"]["space_weather"]:
+    # The job starts on a background thread: wait for *this* run to appear and finish.
+    run = None
+    for _ in range(120):
+        run = one(site, "SELECT run_id, status FROM job_run WHERE job_name = 'space_weather' AND run_id > %s "
+                        "ORDER BY run_id DESC LIMIT 1", (before,))
+        if run and run["status"] != "running":
             break
         time.sleep(0.5)
-    latest = {j["job_name"]: j for j in jobs["latest"]}
-    assert latest["space_weather"]["status"] == "success"
+    assert run and run["status"] == "success"
+    latest = {j["job_name"]: j for j in admin.get("/api/admin/jobs").json["latest"]}
+    assert latest["space_weather"]["run_id"] == run["run_id"]
     assert admin.post("/api/admin/jobs/unknown/run", headers=H).status_code == 404
     assert admin.get("/api/admin/logs?source=download&limit=5").json["items"]
     assert admin.get("/api/admin/logs?source=evil").status_code == 400

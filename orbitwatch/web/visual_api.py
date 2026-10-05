@@ -88,6 +88,40 @@ def orbit(norad_id):
     ecef = orbital.teme_to_ecef(r[0], jd, fr)
     good = err[0] == 0
     lat, lon, alt = orbital.ecef_to_geodetic(ecef[good])
+    # One period in the TEME (inertial) frame: the orbit itself, a closed ellipse. The globe rotates it by
+    # Greenwich sidereal time at each frame, so it stays closed and passes through the moving object.
+    ring = offsets <= period_s + 1e-6
     return ok({"norad_id": norad_id, "t": t.isoformat() + "Z", "period_min": float(el["period_min"]),
                "offsets_s": offsets[good].tolist(), "ecef_km": np.round(ecef[good], 2).tolist(),
+               "teme_km": np.round(r[0][good & ring], 2).tolist(),
                "now": {"lat": float(lat[0]), "lon": float(lon[0]), "alt_km": float(alt[0])} if len(lat) else None})
+
+
+@bp.get("/conjunction-markers")
+def conjunction_markers():
+    """Upcoming close approaches (next 72 h, MEDIUM and above) placed where they happen: the watched object's
+    Earth-fixed position at TCA, from its current element set."""
+    acct = account()
+    rows = db.query(acct, f"""
+        SELECT d.event_id, d.time_of_closest_approach, d.miss_distance_km, d.relative_velocity, d.risk_level,
+               d.probability_of_collision, d.primary_norad, d.primary_name, d.secondary_norad, d.secondary_name,
+               co.epoch, {', '.join('co.' + f for f in orbital.ELEMENT_FIELDS)}
+          FROM v_conjunction_detail d JOIN current_orbit co ON co.norad_id = d.primary_norad
+         WHERE d.origin = 'orbitwatch' AND d.time_of_closest_approach BETWEEN UTC_TIMESTAMP()
+               AND UTC_TIMESTAMP() + INTERVAL 72 HOUR AND d.risk_level IN ('MEDIUM', 'HIGH', 'CRITICAL')
+         ORDER BY FIELD(d.risk_level, 'CRITICAL', 'HIGH', 'MEDIUM'), d.time_of_closest_approach LIMIT 150""")
+    out = []
+    for r in rows:
+        sat = orbital.satrec_from_elements({**r, "norad_id": r["primary_norad"]})
+        jd, fr = orbital.julian(r["time_of_closest_approach"])
+        err, pos, _ = sat.sgp4(jd, fr)
+        if err:
+            continue
+        ecef = orbital.teme_to_ecef(np.array([pos]), jd, fr)[0]
+        out.append({"event_id": r["event_id"], "tca": r["time_of_closest_approach"].isoformat() + "Z",
+                    "miss_km": float(r["miss_distance_km"]), "rel_vel_kms": float(r["relative_velocity"]),
+                    "risk": r["risk_level"], "pc": r["probability_of_collision"],
+                    "primary": {"norad_id": r["primary_norad"], "name": r["primary_name"]},
+                    "secondary": {"norad_id": r["secondary_norad"], "name": r["secondary_name"]},
+                    "ecef_km": [round(float(x), 2) for x in ecef]})
+    return ok({"items": out})

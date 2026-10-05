@@ -1,7 +1,8 @@
 import { csvUrl, get, qs } from '../api.js';
 import { agentPanel } from '../agent-panel.js';
-import { debounce, empty, errorBox, esc, fmt, h, hashQuery, loading, objLink, pager, riskBadge, RISKS, setHashQuery,
-  table, typeTag } from '../ui.js';
+import { term } from '../drawers.js';
+import { age, debounce, empty, errorBox, esc, fmt, h, hashQuery, loading, objLink, pager, prov, riskBadge, RISKS,
+  setHashQuery, table, typeTag } from '../ui.js';
 
 export async function render(root, { app }) {
   const q0 = hashQuery();
@@ -66,7 +67,7 @@ export async function render(root, { app }) {
   }
 
   let stopAgent = null;
-  async function showDetail(id) {
+  async function showDetail(id, assessmentId) {
     setHashQuery({ ...params(), to: state.to, page: state.page > 1 ? state.page : '', event: id });
     detail.innerHTML = `<div class="card" style="margin-bottom:14px">${loading()}</div>`;
     try {
@@ -75,21 +76,26 @@ export async function render(root, { app }) {
       const side = (o, label) => `<div><h3>${label}</h3><p style="margin-top:6px">${objLink(o.norad_id, o.name)} ${typeTag(o.object_type)}</p>
         <dl class="facts small"><dt>Owner</dt><dd>${esc(o.org_name || '—')}${o.country_name ? ` · ${esc(o.country_name)}` : ''}</dd>
         <dt>Orbit</dt><dd>${o.orbit?.perigee_km != null ? `${fmt.int(o.orbit.perigee_km)} × ${fmt.int(o.orbit.apogee_km)} km, ${fmt.num(o.orbit.inclination, 1)}°` : '—'}</dd>
-        <dt>Element epoch</dt><dd>${fmt.dt(o.orbit?.epoch)}</dd></dl></div>`;
-      detail.innerHTML = `<section class="card" style="margin-bottom:14px">
+        <dt>${term('epoch', 'Element epoch')}</dt><dd>${fmt.dt(o.orbit?.epoch)}<div class="small muted">age ${age(o.orbit?.epoch)}</div></dd>
+        <dt>${term('provenance', 'Source')}</dt><dd>${o.orbit?.source ? prov({ src: o.orbit.source, fetched: o.orbit.fetched_at }) : '—'}</dd></dl></div>`;
+      const ar = d.archive_risk;
+      const archiveNote = e.origin === 'orbitalguard-archive' ? `<div class="banner info"><svg class="icon"><use href="#i-info"/></svg><div>
+        <strong>Archived event.</strong> Screened by OrbitWatch's previous version (OrbitalGuard) from real CelesTrak data; kept for the record, it sent no alerts.
+        ${ar ? `OrbitalGuard's final score: ${riskBadge(ar.risk_level)} ${fmt.num(ar.risk_score, 2)} after ${fmt.int(ar.reassessments)} re-assessments (${esc(ar.uncertainty_model || '')}).` : ''}</div></div>` : '';
+      detail.innerHTML = `<section class="card bezel" style="margin-bottom:14px">${archiveNote}
         <div class="card-head"><h2>Event #${e.event_id} ${riskBadge(e.risk_level)}</h2>
           <div class="row"><a class="btn accent" href="#/globe?event=${e.event_id}">Replay in 3D</a><button class="btn ghost" id="closeDetail">Close</button></div></div>
         <div class="grid cols-3">
           <div><h3>Encounter</h3><dl class="facts" style="margin-top:8px">
             <dt>TCA</dt><dd>${fmt.dt(e.time_of_closest_approach)}<div class="small muted">${fmt.rel(e.time_of_closest_approach)}</div></dd>
-            <dt>Miss distance</dt><dd><strong>${fmt.km(e.miss_distance_km, 3)}</strong></dd>
+            <dt>${term('miss', 'Miss distance')}</dt><dd><strong>${fmt.km(e.miss_distance_km, 3)}</strong></dd>
             <dt>Relative velocity</dt><dd>${fmt.num(e.relative_velocity, 3)} km/s</dd>
-            <dt>Probability of collision</dt><dd>${e.probability_of_collision == null ? '—' : Number(e.probability_of_collision).toExponential(2)}<div class="small muted">Foster 2D, 20 m hard-body radius</div></dd>
+            <dt>${term('pc', 'Probability of collision')}</dt><dd>${e.probability_of_collision == null ? '—' : Number(e.probability_of_collision).toExponential(2)}<div class="small muted">Foster 2D, 20 m hard-body radius</div></dd>
             <dt>Recorded</dt><dd>${fmt.dt(e.created_at)}${e.updated_at !== e.created_at ? `<div class="small muted">refined ${fmt.dt(e.updated_at)}</div>` : ''}</dd></dl></div>
           ${side(d.primary, 'Watched object')}${side(d.secondary, 'Other object')}
         </div></section>`;
       if (stopAgent) stopAgent();
-      stopAgent = await agentPanel(detail, e.event_id, app);
+      stopAgent = await agentPanel(detail, e.event_id, app, { assessmentId });
       detail.querySelector('#closeDetail').addEventListener('click', () => {
         if (stopAgent) { stopAgent(); stopAgent = null; }
         detail.innerHTML = '';
@@ -112,5 +118,12 @@ export async function render(root, { app }) {
   filters.addEventListener('submit', (e) => e.preventDefault());
   load();
   if (q0.event) showDetail(Number(q0.event));
+  else if (q0.assessment) {
+    // deep link from the event log / dashboard: open the assessment's event (synthetic ones live in the demo lab)
+    get(`/assessments/${Number(q0.assessment)}`).then((a) => {
+      if (a.demo_event_id) location.hash = `#/demo?assessment=${a.assessment_id}`;
+      else if (a.event_id) showDetail(a.event_id, a.assessment_id);
+    }).catch((err) => { detail.innerHTML = errorBox(err); });
+  }
   return () => { if (stopAgent) stopAgent(); };
 }

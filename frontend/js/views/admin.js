@@ -3,8 +3,8 @@
 import { del, get, patch, post, put, qs } from '../api.js';
 import { debounce, empty, errorBox, esc, fmt, h, loading, modal, objLink, pager, table, toast, typeTag } from '../ui.js';
 
-const TABS = [['users', 'Users & roles'], ['ref', 'Reference data'], ['watchlist', 'Watchlist'], ['config', 'Configuration'],
-  ['jobs', 'Jobs'], ['logs', 'Logs'], ['cluster', 'Database cluster']];
+const TABS = [['system', 'System'], ['users', 'Users & roles'], ['ref', 'Reference data'], ['watchlist', 'Watchlist'],
+  ['config', 'Configuration'], ['jobs', 'Jobs'], ['logs', 'Logs'], ['cluster', 'Database cluster']];
 const ROLES = [['viewer', 'Public Viewer'], ['analyst', 'Analyst'], ['admin', 'Administrator']];
 
 export async function render(root, { app }) {
@@ -28,11 +28,68 @@ export async function render(root, { app }) {
   };
   tabs.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) show(b.dataset.k); });
   const initial = new URLSearchParams(location.hash.split('?')[1] || '').get('tab');
-  show(TABS.some(([k]) => k === initial) ? initial : 'users');
+  show(TABS.some(([k]) => k === initial) ? initial : 'system');
   return () => { if (stop) stop(); };
 }
 
 const PANELS = {
+  async system(body) {
+    const draw = async () => {
+      const [s, st, rec] = await Promise.all([get('/admin/scheduler'), get('/system/status'), get('/admin/reconcile/latest')]);
+      const hb = s.heartbeat || {};
+      const q = s.email_queue || {};
+      const r = rec.report;
+      body.innerHTML = `<div class="grid cols-2">
+        <section class="card bezel"><div class="card-head"><h2>Scheduler</h2>
+          <span class="badge ${s.running ? 'risk-LOW' : 'risk-CRITICAL'}"><i></i>${s.running ? 'running' : 'not running'}</span></div>
+          <dl class="telemetry"><dt>Host / pid</dt><dd>${esc(hb.host || '—')} / ${esc(hb.pid || '—')}</dd>
+            <dt>Started</dt><dd>${fmt.dt(hb.started_at)}</dd><dt>Heartbeat</dt><dd>${hb.heartbeat_at ? fmt.rel(hb.heartbeat_at) : '—'}</dd></dl>
+          ${s.running ? '' : '<p class="small" style="margin-top:10px">Start it with <span class="mono">ow service</span> (web + scheduler, supervised) or <span class="mono">ow scheduler</span>. Without it, data does not refresh.</p>'}
+        </section>
+        <section class="card"><div class="card-head"><h2>E-mail</h2><span class="badge ${st.email_delivery ? 'risk-LOW' : 'risk-MEDIUM'}"><i></i>${st.email_delivery ? 'SMTP configured' : 'SMTP not configured'}</span></div>
+          <dl class="telemetry"><dt>Queued</dt><dd>${fmt.int(q.queued || 0)}</dd><dt>Failed (gave up)</dt><dd>${fmt.int(q.failed || 0)}</dd><dt>Sent, 24 h</dt><dd>${fmt.int(q.sent_24h || 0)}</dd></dl>
+          <div class="row" style="margin-top:12px"><button class="btn sm" id="testMail">Send me a test e-mail</button></div></section>
+      </div>
+      <section class="card flush" style="margin-top:14px"><div class="card-head"><h2>Scheduled jobs</h2><span class="sub">next run, last run and result</span></div><div class="sj"></div></section>
+      <section class="card flush" style="margin-top:14px"><div class="card-head"><h2>Recent e-mails</h2><span class="sub">password-reset bodies are erased once sent</span></div><div class="em"></div></section>
+      <section class="card" style="margin-top:14px"><div class="card-head"><h2>Database reconciliation</h2>
+          <div class="row"><button class="btn sm" data-reconcile="dry">Run a dry run</button></div></div>
+        ${r ? `<p class="small muted">Latest report <span class="mono">${esc(rec.file)}</span> (${r.applied ? 'applied' : 'dry run'}) · ${fmt.int(rec.count)} reports in runtime/reports</p>
+          <dl class="telemetry">${Object.entries(r.summary).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+          ${r.results && Object.keys(r.results).length ? `<h3 style="margin:14px 0 6px">Applied</h3><pre class="log">${esc(JSON.stringify(r.results, null, 2))}</pre>` : ''}`
+          : '<p class="small muted">No reconciliation has run yet (<span class="mono">ow reconcile</span>).</p>'}
+        <p class="small muted" style="margin-top:10px">Applying changes is a command-line operation (<span class="mono">ow reconcile --apply</span>) so it can be reviewed first.</p></section>`;
+      body.querySelector('.sj').appendChild(table([
+        { label: 'Job', render: (j) => `<strong class="mono">${esc(j.job_id)}</strong><div class="small muted">${esc(j.description)}</div>` },
+        { label: 'Schedule', render: (j) => `<span class="small mono">${esc(j.trigger_desc)}</span>` },
+        { label: 'Next run', render: (j) => (j.next_run_at ? `${fmt.dt(j.next_run_at)}<div class="small muted">${fmt.rel(j.next_run_at)}</div>` : '—') },
+        { label: 'Last', render: (j) => (j.last_started_at ? `${statusTag(j.last_status || 'running')}<div class="small muted">${fmt.rel(j.last_started_at)}</div>` : '<span class="muted">not yet</span>') },
+        { label: 'Last success', render: (j) => (j.last_success_at ? fmt.rel(j.last_success_at) : '—') },
+        { label: 'Message', render: (j) => `<div class="small" style="max-width:420px">${esc((j.last_message || '').slice(0, 220))}</div>` },
+      ], s.jobs));
+      const em = body.querySelector('.em');
+      if (!s.recent_email.length) em.innerHTML = empty('No e-mail yet');
+      else em.appendChild(table([
+        { label: '#', render: (m) => `<span class="mono">${m.email_id}</span>` }, { label: 'Kind', render: (m) => esc(m.kind) },
+        { label: 'To', render: (m) => `<span class="small">${esc(m.to_address)}</span>` },
+        { label: 'Status', render: (m) => statusTag(m.status === 'sent' ? 'success' : m.status === 'failed' ? 'failed' : 'running', m.status) },
+        { label: 'Attempts', num: true, render: (m) => fmt.int(m.attempts) },
+        { label: 'Queued', render: (m) => fmt.rel(m.created_at) },
+        { label: 'Error', render: (m) => `<span class="small">${esc(m.last_error || '')}</span>` }], s.recent_email));
+    };
+    body.addEventListener('click', async (e) => {
+      if (e.target.closest('#testMail')) {
+        try { const r = await post('/admin/email/test'); toast(r.email_delivery ? 'Test e-mail queued' : 'Queued; SMTP is not configured, so it waits in the outbox'); setTimeout(draw, 1500); } catch (err) { toast(err.message, 'error'); }
+      }
+      if (e.target.closest('[data-reconcile]')) {
+        try { await post('/admin/jobs/reconcile/run', { apply: false }); toast('Reconciliation dry run started; the report appears here when it finishes'); setTimeout(draw, 8000); } catch (err) { toast(err.message, 'error'); }
+      }
+    });
+    await draw();
+    const timer = setInterval(() => draw().catch(() => {}), 30000);
+    return () => clearInterval(timer);
+  },
+
   async users(body, app) {
     const draw = async (q = '') => {
       const { items } = await get('/admin/users' + qs({ q }));
@@ -180,7 +237,9 @@ const PANELS = {
   async jobs(body) {
     const DESCR = { catalog: 'SATCAT + GCAT reference data', ingest: 'CelesTrak element sets', screening: 'close-approach screening',
       aggregation: 'MapReduce / aggregation summaries', reentry_train: 'train re-entry model', reentry_predict: 'refresh re-entry predictions',
-      backup: 'MySQL + MongoDB backup', spacetrack_import: 'Space-Track history import' };
+      backup: 'MySQL + MongoDB backup', spacetrack_import: 'Space-Track: history, decaying objects, decay messages',
+      space_weather: 'NOAA Kp / F10.7', notify: 'queue alert and decision e-mails', email_dispatch: 'send queued e-mails',
+      housekeeping: 'prune rate limits, tokens, stale runs', reconcile: 'reconciliation report (dry run)' };
     let timer = null;
     const draw = async () => {
       const data = await get('/admin/jobs');
@@ -193,7 +252,7 @@ const PANELS = {
         { label: 'Status', render: (j) => (data.running[j] ? '<span class="tag accent">running…</span>' : latest[j] ? statusTag(latest[j].status) : '—') },
         { label: 'Result', render: (j) => `<div class="small" style="max-width:520px">${esc((latest[j]?.message || '').split('\n')[0])}</div>` },
         { label: '', render: (j) => (j === 'spacetrack_import'
-          ? `<select class="stmode" style="width:120px"><option value="watchlist">watchlist</option><option value="decayed">decayed</option></select> `
+          ? `<select class="stmode" style="width:130px"><option value="watchlist">watchlist</option><option value="decaying">decaying</option><option value="decayed">re-entered</option><option value="decay">decay messages</option></select> `
           : '') + `<button class="btn sm" data-run="${j}" ${data.running[j] ? 'disabled' : ''}>Run now</button>` },
       ], data.jobs));
       body.querySelector('.r').appendChild(table([

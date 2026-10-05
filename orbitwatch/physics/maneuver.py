@@ -68,18 +68,27 @@ class Encounter:
         return float(np.linalg.norm(self.shifted(dv_ric, dt)))
 
 
-def optimise(enc, dt, pc_target=PC_TARGET, max_dv_mps=MAX_DELTA_V_MPS, max_drift_km=MAX_SMA_DRIFT_KM):
-    """Smallest RIC delta-v (applied dt seconds before TCA). Returns a candidate dict."""
+def optimise(enc, dt, pc_target=PC_TARGET, max_dv_mps=MAX_DELTA_V_MPS, max_drift_km=MAX_SMA_DRIFT_KM, min_miss_km=None):
+    """Smallest RIC delta-v (applied dt seconds before TCA). Returns a candidate dict.
+
+    min_miss_km (optional): a reviewer's requirement on the miss distance after the burn, added as a
+    further inequality constraint (a re-plan after a rejection must honour it).
+    """
     limit = max_dv_mps / 1000.0
     # Warm start: a small in-track nudge on the side that opens the miss distance.
     rel_ric = enc.rot.T @ enc.rel_pos
     sign = np.sign(np.dot(rel_ric, phi_rv(enc.n, dt)[:, 1])) or 1.0
     x0 = np.array([0.0, sign * 1e-4, 0.0])
+    constraints = [{"type": "ineq", "fun": lambda dv: pc_target * SAFETY_MARGIN - enc.pc_after(dv, dt)},
+                   {"type": "ineq", "fun": lambda dv: max_drift_km - abs(sma_drift_km(dv[1], enc.n))}]
+    if min_miss_km:
+        constraints.append({"type": "ineq", "fun": lambda dv: enc.miss_after(dv, dt) - min_miss_km * 1.001})
+        # start from a burn that roughly opens the required distance, or SLSQP may stall at the Pc optimum
+        col = phi_rv(enc.n, dt)[:, 1]
+        x0 = np.array([0.0, sign * min(limit, min_miss_km / max(np.linalg.norm(col), 1e-9)), 0.0])
     res = minimize(lambda dv: float(np.linalg.norm(dv)), x0, method="SLSQP",
-                   bounds=[(-limit, limit)] * 3,
-                   constraints=[{"type": "ineq", "fun": lambda dv: pc_target * SAFETY_MARGIN - enc.pc_after(dv, dt)},
-                                {"type": "ineq", "fun": lambda dv: max_drift_km - abs(sma_drift_km(dv[1], enc.n))}],
-                   options={"maxiter": 200, "ftol": 1e-12})
+                   bounds=[(-limit, limit)] * 3, constraints=constraints,
+                   options={"maxiter": 300, "ftol": 1e-12})
     dv = res.x
     pc = enc.pc_after(dv, dt)
     drift = abs(sma_drift_km(dv[1], enc.n))

@@ -222,10 +222,79 @@ OrbitWatch's own data:
 | **Manoeuvre optimizer** | Clohessy–Wiltshire relative motion + SLSQP: the smallest Δv, burned half-orbits before TCA, that brings Pc under 1e-5, within a 20 m/s budget and 5 km of slot drift. | `orbitwatch/physics/maneuver.py` |
 | **Space weather** | NOAA SWPC Kp / Ap / F10.7, stored in `space_weather` before every ingest; Ap scales the in-track uncertainty growth. | `orbitwatch/physics/spaceweather.py`, `ow space-weather` |
 | **Ground stations** | AOS/LOS windows over SvalSat, Fairbanks, McMurdo and ISRO ISTRAC (Bengaluru, Lucknow, Mauritius); the agent requires an uplink window before any burn. | `orbitwatch/physics/ground.py`, object page |
+| **Manoeuvre approval** | An analyst approves (explicit confirmation) or rejects (a reason is required) the recommended burn. OrbitWatch has no command uplink, so an approved burn is executed **in simulation** and labelled SIMULATED everywhere: SGP4 nominal orbit plus the linearised Clohessy–Wiltshire effect of the impulse. A rejection can re-plan at once with the reviewer's feedback and a required minimum miss distance (a hard optimiser constraint). Decisions are audited (`maneuver_decision`, event log); the globe replays the burn: nominal vs post-burn orbit, burn flare, miss before and after. | `orbitwatch/decisions.py`, `/api/assessments/<id>/decision`, `/simulation`, `#/globe?assessment=<id>` |
+| **Synthetic-debris demo** | A guaranteed close approach on demand: synthetic debris whose SGP4 element set is fitted iteratively until SGP4 reproduces the planned encounter to under a metre. Kept in its own tables (`demo_scenario`, `demo_object`, `demo_event`) with `SYN-` designations, so it never reaches the catalogue, statistics, reports, alerts or exports; clear one scenario or reset all. | `orbitwatch/demo.py`, Demo lab page |
+| **Live updates** | Server-Sent Events (`/api/stream`): event-log rows for the user's role and the alert count, pushed as they happen (the stream reads MySQL, so the scheduler's events arrive too). EventSource reconnects and resumes from `Last-Event-ID`; if the stream fails the page polls `/api/events` every 30 s and says so. | `orbitwatch/web/live_api.py`, `frontend/js/live.js` |
+| **Guided tour, glossary, event log** | A one-minute tour of the interface; a searchable glossary (dotted labels anywhere open it at that term); an event-log drawer with the live feed, filterable by category. | `frontend/js/tour.js`, `drawers.js`, `glossary-data.js` |
 
 All of it is additive: `database/mysql/06_extensions.sql` adds two columns and four tables
-(`ground_station`, `space_weather`, `agent_assessment`, `agent_step`) through an idempotent migration,
-with their own grants. The Analyst role may run the agent; everyone may read its assessments.
+(`ground_station`, `space_weather`, `agent_assessment`, `agent_step`) and `07_operations.sql` the
+operations layer below, both through idempotent migrations with their own grants. The Analyst role may
+run the agent, decide on manoeuvres and run the demo; everyone may read assessments and decisions
+(reviewer names are visible to analysts and administrators only).
+
+## Operations
+
+**Objects, orbits and coverage.** The catalogue (CelesTrak SATCAT) lists every object ever tracked; 34,907
+of them are in Earth orbit today. An object can only be propagated, screened and drawn on the globe if a
+current element set is published for it. CelesTrak's public groups cover active satellites and selected
+debris clouds (about 19,700 objects); most other debris and rocket bodies are published only in
+Space-Track's GP catalogue, and about 800 objects have never had elements published. So the globe shows
+the objects *tracked* (with an orbit), the catalogue counts the objects *catalogued*, and the dashboard
+shows the coverage between them. OrbitWatch never estimates an orbit to fill the gap.
+
+**Data sources and provenance.** `ingest` fetches CelesTrak's groups (at most every two hours, per its
+policy) and, when Space-Track credentials are set, the Space-Track GP catalogue (at most hourly); per
+object the newest epoch wins. Every current orbit records its source, download time and download id;
+every source's last attempt, last success, record count and freshness are in `data_source` and on the
+dashboard. The Space-Track client stays under 250 requests per hour across all processes.
+
+**Database reconciliation.** `ow reconcile` (dry run) / `ow reconcile --apply` compares OrbitWatch with
+the previous version's data (`orbitalguard.db` and its versions in git history), removes test fixtures,
+imports the archive's real CelesTrak element sets into the history, keeps its 487 real close approaches
+as an archive (they alert nobody), puts its synthetic demo data into the demo tables only, and repairs
+orphans, duplicates, stale current orbits and missing provenance. Every run writes a report to
+`runtime/reports/`.
+
+**Automatic updates.** `ow scheduler` (or `ow service`) runs, with one-at-a-time locks, retries with
+back-off and every attempt in `job_run`:
+
+| Job | When | What |
+|---|---|---|
+| ingest_and_screen | every 4 h | space weather, element sets, screening with Pc, alert e-mails |
+| space_weather | every 3 h | NOAA Kp / F10.7 |
+| spacetrack_daily / _weekly | daily / weekly | decay messages, history of decaying objects, watchlist and re-entered objects |
+| aggregation | daily | MapReduce / aggregation summaries |
+| reentry_train / reentry_predict | weekly / daily | model training and evaluation; predictions |
+| backup | daily | MySQL + MongoDB, with row counts and checksums in the manifest |
+| notify / email | every 5 min / every minute | queue alert and decision e-mails; deliver them |
+| housekeeping | hourly | prune rate limits, spent reset tokens, stale runs, cleared demos |
+
+The scheduler writes a heartbeat and each job's next and last run to MySQL (dashboard, admin System tab).
+A second scheduler refuses to start.
+
+**Re-entry prediction (SRS 3.8).** Trained only on objects that have re-entered (Space-Track decay
+messages, SATCAT decay dates as fallback), evaluated on held-out objects never seen in training, and
+registered with its data window, sizes, metrics and dataset hash in `ml_model`. A model is used only if
+there are at least 40 re-entered objects with history and the held-out test passes the gate; otherwise it
+is registered as rejected and predictions are shown as unavailable. History for training comes from
+Space-Track (`ow spacetrack-import --mode decayed`).
+
+**Accounts and notifications.** Change password (other sessions are signed out), forgot / reset password
+(single-use tokens that expire in 30 minutes, only a SHA-256 stored, links built from `APP_BASE_URL`),
+database-backed rate limits on login, registration and reset, notification preferences (e-mail alerts
+and their minimum risk level; decision e-mails for analysts) and a transactional e-mail outbox with
+retries. Without SMTP settings alerts stay in the app and e-mails wait in the outbox.
+
+**Serving.** `ow service` runs the web server and the scheduler and restarts either if it dies. The web
+server is cheroot with TLS on https://localhost:8443; http://localhost:8080 only redirects there. The
+session cookie is Secure, HttpOnly and SameSite=Strict, and only login and logout write it.
+
+**Verification.** `ow verify restore|failover|https|scheduler|all` tests the infrastructure for real:
+a fresh backup restored into isolated temporary MySQL and MongoDB instances and compared table by table;
+a MongoDB failover (primary stepped down, a secondary stopped and recovered) under read and write
+traffic; TLS version, certificate, redirect, cookies, headers, the live stream over TLS and mixed
+content; and the jobs the scheduler actually ran. Reports go to `runtime/reports/`.
 
 ## Setup (Windows)
 
@@ -242,26 +311,27 @@ database files.
 2. **MongoDB:** unzip the MongoDB Community 8.0 Windows zip (and mongosh) into
    `%USERPROFILE%\orbitwatch-runtime\mongodb\`.
 3. **`.env`:** add `MYSQL_ROOT_PASSWORD=...` (used once, to create the database and accounts).
-   Optionally add `SPACETRACK_USER` / `SPACETRACK_PASSWORD`, and `GROQ_API_KEY` for the LLM agent
-   (`GROQ_REASONING_MODEL` picks the model; if Groq has retired it, the agent picks an available one).
-   Everything else is generated.
+   Recommended: `SPACETRACK_USERNAME` / `SPACETRACK_PASSWORD` (full orbital coverage, history, re-entry
+   training) and `SMTP_USERNAME` / `SMTP_PASSWORD` (e-mail alerts and password reset; see
+   `.env.example`). Optional: `GROQ_API_KEY` for the LLM agent (`GROQ_REASONING_MODEL` picks the model;
+   if Groq has retired it, the agent picks an available one). Everything else is generated.
 4. **First-time setup:** creates the certificate, MySQL schema, roles and accounts, the MongoDB
    cluster, loads the catalogue, ingests orbits and runs a first screening:
    ```bash
    ow setup
    ow create-admin
    ```
-5. **Run:** three terminals, or start each once:
+5. **Run:**
    ```bash
    ow mongo-start
-   ow serve
-   ow scheduler
+   ow service
    ```
-   Open https://localhost:5000 and accept the self-signed certificate. `ow serve --http` serves plain
-   HTTP for development.
+   `ow service` runs the HTTPS web server and the scheduler together. Open https://localhost:8443 and
+   accept the self-signed certificate (or set `ORBITWATCH_TLS_CERT` / `ORBITWATCH_TLS_KEY`).
+   `ow serve --http --port 5050` serves plain HTTP for development.
 
-Other commands: `ow ingest`, `ow screen`, `ow assess EVENT_ID`, `ow space-weather`, `ow aggregate`, `ow load-catalog`, `ow backup`,
-`ow restore-mysql DIR`, `ow restore-mongo DIR`, `ow spacetrack-import --mode watchlist|decayed`,
+Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|scheduler|all`, `ow ingest`, `ow screen`, `ow assess EVENT_ID`, `ow space-weather`, `ow aggregate`, `ow load-catalog`, `ow backup`,
+`ow restore-mysql DIR`, `ow restore-mongo DIR`, `ow spacetrack-import --mode watchlist|decaying|decayed|decay`,
 `ow reentry-train`, `ow reentry-predict`, `ow mongo-status`, `ow mongo-stop`. Add `--cached` to
 `setup`, `load-catalog` or `ingest` to reuse the downloads in the runtime cache.
 
@@ -276,26 +346,34 @@ Other commands: `ow ingest`, `ow screen`, `ow assess EVENT_ID`, `ow space-weathe
 ```bash
 %USERPROFILE%\orbitwatch-runtime\venv\Scripts\python -m pytest tests
 ```
-The orbit, screening, SQL and catalogue-mapping tests need no database. `tests/test_api_roles.py`
-runs against the configured MySQL (point `MYSQL_PORT` at a disposable instance). It creates and removes
-throwaway users.
+The orbit, screening, SQL and catalogue-mapping tests need no database. `tests/test_api_roles.py`,
+`tests/test_website_e2e.py` (TC-xx cases by role) and `tests/test_operations.py` (synthetic demo,
+manoeuvre approval and re-plan, password change and reset, rate limits, e-mail delivery to a local SMTP
+sink, live stream, event-log visibility, provenance, re-entry gate, reconciliation) run against the
+configured databases (point `MYSQL_PORT` at a disposable instance). They create and remove their own data.
 
 ## Project structure
 
 ```
-database/mysql/      01_schema.sql 02_routines.sql 03_views.sql 04_security.sql 05_seed.sql 06_extensions.sql ownership_transfers.csv
-orbitwatch/          config, db (MySQL pools per role, MongoDB), orbital (SGP4), auth, mongo_cluster, mysql_setup, certs
+database/mysql/      01_schema.sql 02_routines.sql 03_views.sql 04_security.sql 05_seed.sql 06_extensions.sql 07_operations.sql ownership_transfers.csv
+orbitwatch/          config, db (MySQL pools per role, MongoDB), orbital (SGP4, TLE/OMM), auth, mongo_cluster, mysql_setup, certs,
+                     events (event log), notify (e-mail outbox), ratelimit, decisions (approval + simulation), demo (synthetic),
+                     reconcile, verify, server (cheroot TLS, supervised service)
 orbitwatch/jobs/     catalog, ingest, screening, aggregate, reentry, spacetrack, spaceweather, backup, runner, scheduler, sources
 orbitwatch/physics/  collision (Foster Pc), maneuver (CW + SLSQP), ground (passes), spaceweather (NOAA)
 orbitwatch/agent/    tools (deterministic) and orchestrator (Groq tool-calling loop, guardrails, fallback)
-orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, visual, reports, admin, landing, agent
-frontend/            index.html, css/app.css, js/ (app, api, ui, charts, globe-core, agent-panel, views/*)
+orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, visual, reports, admin, landing, agent, live, demo
+frontend/            index.html, css/app.css, js/ (app, api, ui, charts, globe-core, agent-panel, live, drawers, tour, glossary-data, views/*)
 legacy/orbitalguard/ the original OrbitalGuard project, unchanged
 tests/               pytest suite
 manage.py, ow.cmd    command line
 ```
 
 ## Data sources and attribution
+
+* Space-Track.org (18th Space Defense Squadron): GP catalogue, element-set history and decay messages, used under
+  its user agreement with a personal account; requests stay within its published limits.
+* NASA GIBS: Blue Marble shaded relief and VIIRS Black Marble imagery on the globe (attribution shown on the globe).
 
 * CelesTrak (T.S. Kelso): GP element sets and SATCAT, https://celestrak.org. Downloaded at most every
   few hours, as CelesTrak asks.

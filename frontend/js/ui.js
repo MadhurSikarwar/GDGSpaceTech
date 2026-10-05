@@ -136,3 +136,29 @@ export function modal(title, bodyHtml, { submitLabel = 'Save', onSubmit } = {}) 
 export function isoInput(date) {
   return date.toISOString().slice(0, 10);
 }
+
+// ---- provenance -----------------------------------------------------------
+const toDate = (iso) => (iso ? new Date(String(iso).endsWith('Z') || String(iso).includes('+') ? iso : `${iso}Z`) : null);
+
+// "4.2 h", "1.6 d": age of an instant relative to now.
+export function age(iso) {
+  const d = toDate(iso);
+  if (!d || Number.isNaN(d.getTime())) return '—';
+  const h = Math.abs(Date.now() - d.getTime()) / 3600000;
+  return h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${fmt.num(h, 1)} h` : `${fmt.num(h / 24, 1)} d`;
+}
+
+// Where a number came from: source, when it was downloaded, how old the data itself is, the model used.
+export function prov({ src, fetched, epoch, model, note } = {}) {
+  const parts = [];
+  if (src) parts.push(`<span class="src">${esc(src)}</span>`);
+  if (fetched) parts.push(`fetched ${esc(fmt.rel(fetched))}`);
+  if (epoch) parts.push(`epoch age ${esc(age(epoch))}`);
+  if (model) parts.push(esc(model));
+  if (note) parts.push(esc(note));
+  return `<span class="prov">${parts.join('<span class="sep">·</span>')}</span>`;
+}
+
+export const unavailable = (title, body = '') => `<div class="unavailable"><strong>${esc(title)}</strong>${body}</div>`;
+export const synTag = () => '<span class="tag syn" title="Synthetic demo data, not a real object">SYNTHETIC</span>';
+export const simTag = () => '<span class="tag sim" title="No command uplink exists: execution is simulated">SIMULATED</span>';

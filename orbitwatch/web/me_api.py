@@ -88,3 +88,47 @@ def acknowledge_all():
     count, _ = db.execute(account(), "UPDATE alert SET acknowledged = TRUE, acknowledged_on = UTC_TIMESTAMP() "
                                      "WHERE user_id = %s AND NOT acknowledged", (current_user()["user_id"],))
     return ok({"acknowledged": count})
+
+
+# ---------------------------------------------------------------------------- notification preferences
+DEFAULT_PREFS = {"email_alerts": True, "min_risk_level": "HIGH", "email_decisions": False}
+
+
+@bp.get("/notifications")
+@login_required
+def notification_prefs():
+    from orbitwatch import config, notify
+    row = db.query_one(account(), "SELECT email_alerts, min_risk_level, email_decisions, updated_at "
+                                  "FROM notification_pref WHERE user_id = %s", (current_user()["user_id"],))
+    prefs = {k: (bool(row[k]) if isinstance(DEFAULT_PREFS[k], bool) else row[k]) for k in DEFAULT_PREFS} \
+        if row else dict(DEFAULT_PREFS)
+    return ok({"prefs": prefs, "email": current_user()["email"], "email_delivery": config.smtp_configured(),
+               "risk_levels": list(notify.RISK_ORDER)})
+
+
+@bp.put("/notifications")
+@login_required
+def set_notification_prefs():
+    from orbitwatch import notify
+    data = body()
+    prefs = dict(DEFAULT_PREFS)
+    row = db.query_one(account(), "SELECT email_alerts, min_risk_level, email_decisions FROM notification_pref "
+                                  "WHERE user_id = %s", (current_user()["user_id"],))
+    if row:
+        prefs.update(email_alerts=bool(row["email_alerts"]), min_risk_level=row["min_risk_level"],
+                     email_decisions=bool(row["email_decisions"]))
+    for key in ("email_alerts", "email_decisions"):
+        if key in data:
+            if not isinstance(data[key], bool):
+                abort(400, description=f"{key} must be true or false")
+            prefs[key] = data[key]
+    if "min_risk_level" in data:
+        if data["min_risk_level"] not in notify.RISK_ORDER:
+            abort(400, description="min_risk_level must be one of " + ", ".join(notify.RISK_ORDER))
+        prefs["min_risk_level"] = data["min_risk_level"]
+    db.execute(account(), """INSERT INTO notification_pref (user_id, email_alerts, min_risk_level, email_decisions)
+                             VALUES (%s, %s, %s, %s) AS n
+                             ON DUPLICATE KEY UPDATE email_alerts = n.email_alerts, min_risk_level = n.min_risk_level,
+                                                     email_decisions = n.email_decisions""",
+               (current_user()["user_id"], prefs["email_alerts"], prefs["min_risk_level"], prefs["email_decisions"]))
+    return ok({"prefs": prefs})
