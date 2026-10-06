@@ -98,7 +98,7 @@ function decisionBox(a, app) {
       <div class="db-body">
         ${ok ? `<dl class="sim-compare">
           <div><dt>Δv</dt><dd>${fmt.num(d.delta_v_mps ?? cand.dv_mps, 3)} m/s</dd></div>
-          <div><dt>Burn (UTC)</dt><dd>${esc(String(d.burn_time || cand.burn_time_utc || '').replace('T', ' ').slice(0, 19)) || '—'}</dd></div>
+          <div><dt>Burn (IST · UTC)</dt><dd>${esc(fmt.dt(d.burn_time || cand.burn_time_utc || ''))}</dd></div>
           <div><dt>Miss before</dt><dd>${d.miss_before_km == null ? '—' : `${fmt.num(d.miss_before_km, 3)} km`}</dd></div>
           <div><dt>Miss after</dt><dd class="up">${d.miss_after_km == null ? '—' : `${fmt.num(d.miss_after_km, 3)} km`}</dd></div></dl>
           <p class="small muted" style="margin:0">OrbitWatch has no command uplink: this burn was executed in simulation only (SGP4 nominal orbit plus the linearised Clohessy–Wiltshire effect of the impulse).</p>`
@@ -135,7 +135,7 @@ function render(body, a, app) {
         <div class="row">${a.risk_tier ? riskBadge(a.risk_tier) : ''}${a.human_approval_required ? '<span class="tag accent">Human approval required</span>' : ''}</div></div>
       ${m ? `<dl class="agent-metrics">
         <div><dt>${term('dv', 'Δv')}</dt><dd>${fmt.num(m.dv_mps, 3)} m/s</dd></div><div><dt>Direction</dt><dd>${esc(m.direction)}</dd></div>
-        <div><dt>Burn</dt><dd>${esc((m.burn_time_utc || '').slice(11, 19))} UTC</dd></div><div><dt>Lead</dt><dd>T−${fmt.num(m.lead_time_min, 0)} min</dd></div>
+        <div><dt>Burn</dt><dd>${esc(fmt.dt(m.burn_time_utc || ''))}</dd></div><div><dt>Lead</dt><dd>T−${fmt.num(m.lead_time_min, 0)} min</dd></div>
         <div><dt>${term('pc', 'Pc')}</dt><dd>${pc(a.pc_before)} → ${pc(a.pc_after)}</dd></div><div><dt>${term('miss', 'Miss after')}</dt><dd>${m.miss_after_km == null ? '—' : `${fmt.num(m.miss_after_km, 2)} km`}</dd></div></dl>`
         : (a.pc_before != null ? `<dl class="agent-metrics"><div><dt>Pc</dt><dd>${pc(a.pc_before)}</dd></div></dl>` : '')}
       <p>${esc(a.explanation || '')}</p>
@@ -183,7 +183,7 @@ async function approveDialog(a, done) {
   try {
     const sim = await get(`/assessments/${a.assessment_id}/simulation`);
     dlg.querySelector('#simMiss').textContent = `${fmt.num(sim.miss_before_km, 3)} → ${fmt.num(sim.miss_after_km, 3)} km at the original TCA`;
-    dlg.querySelector('#simClosest').textContent = `${fmt.num(sim.closest_after.distance_km, 3)} km at ${sim.closest_after.time.slice(11, 19)} UTC`;
+    dlg.querySelector('#simClosest').textContent = `${fmt.num(sim.closest_after.distance_km, 3)} km at ${fmt.dt(sim.closest_after.time)}`;
   } catch (err) {
     dlg.querySelector('#simMiss').textContent = `simulation unavailable: ${err.message}`;
   }

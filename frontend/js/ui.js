@@ -1,5 +1,7 @@
 // Small DOM and formatting helpers shared by every view.
 
+import { bothDateTime, istDateTime, istHMS, utcDateTime, utcHMS } from './time.js';
+
 export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -18,13 +20,16 @@ export const fmt = {
   num: (n, d = 1) => (n == null || Number.isNaN(Number(n)) ? '—'
     : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })),
   km: (n, d = 1) => (n == null ? '—' : `${fmt.num(n, d)} km`),
-  // API datetimes are UTC ("...Z"); orbital work is always shown in UTC.
-  dt: (iso) => {
-    if (!iso) return '—';
-    const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
-    if (Number.isNaN(d.getTime())) return esc(iso);
-    return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-  },
+  // API datetimes are UTC ("...Z"). Readers in India read IST, so every instant is shown IST first, UTC beside it.
+  dt: (iso) => (iso ? bothDateTime(iso) : '—'),
+  ist: (iso) => (iso ? istDateTime(iso) : '—'),
+  utc: (iso) => (iso ? utcDateTime(iso) : '—'),
+  // Table cell: the IST time on top, UTC (and how far away) underneath.
+  when: (iso, rel = true) => (iso
+    ? `<span class="num">${esc(istDateTime(iso))}</span><div class="small muted">${esc(utcHMS(iso))} UTC${rel ? ` · ${esc(fmt.rel(iso))}` : ''}</div>`
+    : '—'),
+  // Time of day only, for the second time in a pair (LOS after AOS, a burn time).
+  tod: (iso) => (iso ? `<span class="num">${esc(istHMS(iso))} IST</span><div class="small muted">${esc(utcHMS(iso))} UTC</div>` : '—'),
   date: (iso) => (iso ? String(iso).slice(0, 10) : '—'),
   rel: (iso) => {
     if (!iso) return '';
@@ -162,3 +167,23 @@ export function prov({ src, fetched, epoch, model, note } = {}) {
 export const unavailable = (title, body = '') => `<div class="unavailable"><strong>${esc(title)}</strong>${body}</div>`;
 export const synTag = () => '<span class="tag syn" title="Synthetic demo data, not a real object">SYNTHETIC</span>';
 export const simTag = () => '<span class="tag sim" title="No command uplink exists: execution is simulated">SIMULATED</span>';
+
+// Counts the plain numbers inside `root` up from zero, once, as a page first appears (units sit in <small> and stay put).
+export function countUpIn(root, selector = '.mc-kpi .v, .tile .value') {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  root.querySelectorAll(selector).forEach((el) => {
+    const node = el.firstChild;
+    if (!node || node.nodeType !== 3) return;
+    const text = node.nodeValue.trim();
+    if (!/^[0-9][0-9,]*(\.[0-9]+)?$/.test(text)) return;
+    const to = parseFloat(text.replace(/,/g, ''));
+    const digits = text.includes('.') ? text.split('.')[1].length : 0;
+    const t0 = performance.now();
+    const step = (now) => {
+      const f = Math.min((now - t0) / 800, 1);
+      node.nodeValue = f < 1 ? (to * (1 - (1 - f) ** 3)).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : text;
+      if (f < 1 && node.isConnected) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}

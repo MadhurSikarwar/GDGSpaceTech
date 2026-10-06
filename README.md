@@ -18,9 +18,9 @@ an **agentic AI decision-support agent** that assesses close approaches and reco
 **probability of collision** for every event, a **minimum delta-v manoeuvre optimizer**, live **space weather**
 and **ground-station contact windows**.
 
-The website opens on a live 3D globe of everything being tracked, with a countdown to the next critical
-approach, live ISS telemetry and a ticker of upcoming approaches. Below that are the altitude spectrum of
-the catalogue, the capabilities, the data pipeline and the largest fragmentation events, all from live data.
+The website opens on a live 3D globe of everything being tracked and tells its story in four short chapters while the
+camera travels with the scroll; the altitude spectrum, the data pipeline and the largest fragmentation events are on
+the How it works page, all from live data.
 
 | Layer | Technology |
 |---|---|
@@ -184,9 +184,9 @@ partly updated set of orbits or events, and the jobs never block queries. A MySQ
 | 3.5 | Subscribe / unsubscribe, alert per subscriber on a new approach, view and acknowledge | `trg_conjunction_alerts`, `web/me_api.py`, My alerts page |
 | 3.6 | Objects per region, debris per country, re-entries per year, altitude-loss rate, monthly average altitude and region-per-year via MapReduce/aggregation into MySQL | `03_views.sql`, `jobs/aggregate.py`, `web/reports_api.py`, Reports page |
 | 3.7 | Analysts run reports, query history, export CSV; admins manage users/roles, reference data, watchlist, threshold, job status and logs | Reports and Admin pages, `web/admin_api.py` |
-| 3.8 | CesiumJS globe with orbits and close-approach replay; regression model for remaining lifetime | `frontend/js/views/globe.js`, `jobs/reentry.py` |
+| 3.8 | CesiumJS globe with orbits and close-approach replay; regression model for remaining lifetime | `frontend/js/views/globe.js`, `frontend/js/encounter.js`, `jobs/reentry.py` |
 | 4.1 | Indexed searches; jobs in the background | separate scheduler process, MVCC |
-| 4.2 | Hashing, DB-level roles, parameterised queries, credentials outside code, HTTPS | bcrypt, `04_security.sql`, `%s` parameters only, `.env`, `orbitwatch/certs.py` |
+| 4.2 | Hashing, DB-level roles, parameterised queries, credentials outside code, HTTPS | bcrypt, `04_security.sql`, `%s` parameters only, `.env`, `orbitwatch/server.py` (TLS) |
 | 4.3 | PK/FK/CHECK, transactional jobs, 3NF, failed downloads and jobs logged and retried | schema, `jobs/runner.py`, `download_log`, `job_run` |
 | 4.5 | Modular components; configurable thresholds, watchlist, schedules; logging | `orbitwatch/` package, `system_config`, log files |
 | 4.6–4.7 | Sharding, replica sets, regular backups | `orbitwatch/mongo_cluster.py`, `jobs/backup.py` |
@@ -211,8 +211,8 @@ partly updated set of orbits or events, and the jobs never block queries. A MySQ
 
 ## Beyond the SRS: features carried over from OrbitalGuard
 
-OrbitWatch began as **OrbitalGuard**, a GDG space-tech project. Nothing it could do was dropped. Its code is
-preserved unchanged in [`legacy/orbitalguard/`](legacy/orbitalguard), and its features are rebuilt here on
+OrbitWatch began as **OrbitalGuard**, a GDG space-tech project. Nothing it could do was dropped. Its code stays
+in git history (commit `8c89289`, the last one before the rebuild), and its features are rebuilt here on
 OrbitWatch's own data:
 
 | Feature | How it works in OrbitWatch | Where |
@@ -222,10 +222,10 @@ OrbitWatch's own data:
 | **Manoeuvre optimizer** | Clohessy–Wiltshire relative motion + SLSQP: the smallest Δv, burned half-orbits before TCA, that brings Pc under 1e-5, within a 20 m/s budget and 5 km of slot drift. | `orbitwatch/physics/maneuver.py` |
 | **Space weather** | NOAA SWPC Kp / Ap / F10.7, stored in `space_weather` before every ingest; Ap scales the in-track uncertainty growth. | `orbitwatch/physics/spaceweather.py`, `ow space-weather` |
 | **Ground stations** | AOS/LOS windows over SvalSat, Fairbanks, McMurdo and ISRO ISTRAC (Bengaluru, Lucknow, Mauritius); the agent requires an uplink window before any burn. | `orbitwatch/physics/ground.py`, object page |
-| **Manoeuvre approval** | An analyst approves (explicit confirmation) or rejects (a reason is required) the recommended burn. OrbitWatch has no command uplink, so an approved burn is executed **in simulation** and labelled SIMULATED everywhere: SGP4 nominal orbit plus the linearised Clohessy–Wiltshire effect of the impulse. A rejection can re-plan at once with the reviewer's feedback and a required minimum miss distance (a hard optimiser constraint). Decisions are audited (`maneuver_decision`, event log); the globe replays the burn: nominal vs post-burn orbit, burn flare, miss before and after. | `orbitwatch/decisions.py`, `/api/assessments/<id>/decision`, `/simulation`, `#/globe?assessment=<id>` |
+| **Manoeuvre approval** | An analyst approves (explicit confirmation) or rejects (a reason is required) the recommended burn. OrbitWatch has no command uplink, so an approved burn is executed **in simulation** and labelled SIMULATED everywhere: SGP4 nominal orbit plus the linearised Clohessy–Wiltshire effect of the impulse. A rejection can re-plan at once with the reviewer's feedback and a required minimum miss distance (a hard optimiser constraint). Decisions are audited (`maneuver_decision`, event log); the globe replays the burn (see **Replays on the globe**). | `orbitwatch/decisions.py`, `/api/assessments/<id>/decision`, `/simulation`, `#/globe?assessment=<id>` |
 | **Synthetic-debris demo** | A guaranteed close approach on demand: synthetic debris whose SGP4 element set is fitted iteratively until SGP4 reproduces the planned encounter to under a metre. Kept in its own tables (`demo_scenario`, `demo_object`, `demo_event`) with `SYN-` designations, so it never reaches the catalogue, statistics, reports, alerts or exports; clear one scenario or reset all. | `orbitwatch/demo.py`, Demo lab page |
 | **Live updates** | Server-Sent Events (`/api/stream`): event-log rows for the user's role and the alert count, pushed as they happen (the stream reads MySQL, so the scheduler's events arrive too). EventSource reconnects and resumes from `Last-Event-ID`; if the stream fails the page polls `/api/events` every 30 s and says so. | `orbitwatch/web/live_api.py`, `frontend/js/live.js` |
-| **Guided tour, glossary, event log** | A one-minute tour of the interface; a searchable glossary (dotted labels anywhere open it at that term); an event-log drawer with the live feed, filterable by category. | `frontend/js/tour.js`, `drawers.js`, `glossary-data.js` |
+| **Guided tour, glossary, event log** | A one-minute tour of the interface; a searchable glossary (dotted labels anywhere open it at that term); an event-log drawer with the live feed, filterable by category. | `frontend/js/tour.js`, `drawers.js` |
 
 All of it is additive: `database/mysql/06_extensions.sql` adds two columns and four tables
 (`ground_station`, `space_weather`, `agent_assessment`, `agent_step`) and `07_operations.sql` the
@@ -250,11 +250,59 @@ every source's last attempt, last success, record count and freshness are in `da
 dashboard. The Space-Track client stays under 250 requests per hour across all processes.
 
 **Database reconciliation.** `ow reconcile` (dry run) / `ow reconcile --apply` compares OrbitWatch with
-the previous version's data (`orbitalguard.db` and its versions in git history), removes test fixtures,
+the previous version's data (`orbitalguard.db`: every version in git history, plus a copy in `runtime/archive/` if you keep one), removes test fixtures,
 imports the archive's real CelesTrak element sets into the history, keeps its 487 real close approaches
 as an archive (they alert nobody), puts its synthetic demo data into the demo tables only, and repairs
 orphans, duplicates, stale current orbits and missing provenance. Every run writes a report to
 `runtime/reports/`.
+
+**Time zones (India).** Everything is stored and computed in UTC. The site is read in India, so every time is
+shown in India Standard Time (UTC+05:30, no daylight saving) first, with UTC beside it: the header clock, the
+tables, chart tooltips, the event log, the globe, the landing page and the alert e-mails. The globe opens
+centred on India; its day/night boundary follows the real Sun, so it agrees with the IST clock (the HUD says
+whether it is day, twilight or night over India and counts the objects over the Indian region, a bounding box
+of 6-36 N, 68-98 E that also takes in parts of neighbouring countries). The "Sunlit" view shows the lit side
+instead. The scheduler's cron times are UTC.
+
+**Space weather.** NOAA SWPC's planetary Kp / Ap and F10.7 solar flux feeds are read every three hours (and
+by every screening run). The newest record by time tag is used, because the feeds are not all published in the
+same order. Ap sets a drag scalar that widens the in-track uncertainty used for collision probability; the
+top bar chip, the status panel and the dashboard show the reading, and when NOAA cannot be reached a quiet-sun
+baseline is used and labelled SIM, never presented as a reading.
+
+**Replays on the globe.** A close approach (`#/globe?event=<id>`) or a simulated burn (`#/globe?assessment=<id>`) opens a
+focused view: the catalogue is hidden, each object is a bright, labelled marker with a comet tail riding its own drawn
+orbit, and one card and one dock are all that is left on screen. The camera starts face-on to the orbit, so the object
+is always in view as it circles the Earth, then dollies in as the pair converges while time slows from fast-forward to
+near real time at the closest approach (the live separation is on the card), and pulls back out afterwards. The
+dock has play/pause, a scrubber with Burn and Closest marks, a speed mode (Auto, Real time, Fast) and a camera mode
+(Auto, Orbit, Close-up, Free; touching the globe switches to Free). For a burn the "without the burn" track is kept as
+a hollow ghost beside the actual one, each with its own live separation. Positions are the server's SGP4 tracks; the
+track window (`?before=&after=&step=` on `/api/conjunctions/<id>/track`) defaults to 30 minutes either side and is
+capped. The replay never invents motion: a burn is shown only as the simulation computes it.
+
+**Look and feel.** Near-black surfaces, hairline structure, expanded display type (Archivo), IBM Plex Sans and Mono, one
+pale-ice signal colour for live data and focus, and the Earth as the only large image. The entrance page is one
+fixed globe and four short chapters while the camera travels with the scroll; the data-heavy sections that used to sit
+on it (altitude spectrum, data flow, fragmentation, database roles, module index) are on **How it works**
+(`#/insights`). The landing page keeps scrolling smooth on a weak GPU: it draws without MSAA, refreshes the
+catalogue points at 20 Hz instead of every frame, and a small governor (`frontend/js/perf.js`) steps the picture
+down (resolution, refresh rate, tile detail, finally the points) when frames stay slow for several seconds.
+
+**Instruments.** The interface is built like a mission-control console, and every reading on it is real. The landing
+page has a HUD (`frontend/js/hud.js`): corner brackets, a chapter rail that doubles as the scroll progress bar, and a
+telemetry column with the camera's range, latitude and longitude, the number of objects tracked and a live countdown to
+the next close approach; a boot log in the corner reports the page's real loading steps (element sets, globe engine,
+catalogue, imagery) and removes itself. The ISS and two watched satellites carry a glowing tail, and the camera leans
+slightly towards the pointer. **Ctrl+K** (or **/**, or the search button) opens a command palette
+(`frontend/js/palette.js`): jump to any page, find an object by name or NORAD number (names that start with the term
+and objects still in orbit first), look a term up in the glossary, or open the event log and the tour. The dashboard
+has a **threat radar** and a live countdown list (`frontend/js/diagrams.js`): the angle is the time to closest
+approach, the distance from the centre is the miss distance, colour is risk; every MEDIUM-or-higher event of the next 72
+hours is drawn (`/api/conjunctions/upcoming`). Each object page draws the **orbit to scale** (the Earth, the ellipse
+through perigee and apogee, the LEO and GEO boundaries), and on the globe a selected object gets a **target lock**:
+brackets and a live altitude and position readout that follow it. A thin line across the top shows a page loading. All of
+it respects `prefers-reduced-motion`, and the landing page's HUD is hidden on narrow screens.
 
 **Automatic updates.** `ow scheduler` (or `ow service`) runs, with one-at-a-time locks, retries with
 back-off and every attempt in `job_run`:
@@ -284,11 +332,22 @@ Space-Track (`ow spacetrack-import --mode decayed`).
 (single-use tokens that expire in 30 minutes, only a SHA-256 stored, links built from `APP_BASE_URL`),
 database-backed rate limits on login, registration and reset, notification preferences (e-mail alerts
 and their minimum risk level; decision e-mails for analysts) and a transactional e-mail outbox with
-retries. Without SMTP settings alerts stay in the app and e-mails wait in the outbox.
+retries. Without SMTP settings alerts stay in the app and e-mails wait in the outbox. Mail to a domain reserved for
+tests (`example.com`, `.test`, `.invalid`, ...) is cancelled instead of sent whenever the SMTP server is a real one, since
+it could only bounce into the sender's inbox; a server on this machine (a development sink) receives everything. The
+test suite blanks the SMTP credentials and refuses any SMTP connection that is not to this machine.
 
 **Serving.** `ow service` runs the web server and the scheduler and restarts either if it dies. The web
 server is cheroot with TLS on https://localhost:8443; http://localhost:8080 only redirects there. The
 session cookie is Secure, HttpOnly and SameSite=Strict, and only login and logout write it.
+
+**Speed.** The heavy read-only aggregates (dashboard counts, filter lookups, data coverage) are kept for
+`ORBITWATCH_READ_CACHE_S` seconds (default 20; 0 turns it off) and dropped at once after any successful
+write through the API. The catalogue search finds a page's ids on `space_object` and reads the wide
+`v_object_catalog` view for those ids only (about 30 ms a page instead of 0.6 s). Connections close after
+each response (`ORBITWATCH_KEEPALIVE=0`) because on Windows cheroot's idle-connection poll added about
+62 ms to every reused connection, and the server also listens on `::1` because browsers try IPv6 first for
+`localhost` and waited about 300 ms for the fallback on every new connection.
 
 **Verification.** `ow verify restore|failover|https|scheduler|all` tests the infrastructure for real:
 a fresh backup restored into isolated temporary MySQL and MongoDB instances and compared table by table;
@@ -302,6 +361,9 @@ Prerequisites: MySQL Server 8.4 (running as a service), Python 3.12, internet ac
 Runtime files live in `%USERPROFILE%\orbitwatch-runtime` (Python venv, MongoDB binaries and data, logs,
 backups, certificate, models). They are kept outside the repository so OneDrive never syncs live
 database files.
+
+`ow` is the launcher `ow.cmd` in the project folder. In Command Prompt run `ow ...`; in PowerShell run
+`.\ow ...` (PowerShell does not run commands from the current folder by name), or add the project folder to `PATH`.
 
 1. **Python environment** (once):
    ```bash
@@ -346,7 +408,11 @@ Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|sche
 ```bash
 %USERPROFILE%\orbitwatch-runtime\venv\Scripts\python -m pytest tests
 ```
-The orbit, screening, SQL and catalogue-mapping tests need no database. `tests/test_api_roles.py`,
+The orbit, screening, SQL and catalogue-mapping tests need no database; `tests/test_frontend_files.py` and
+`tests/test_frontend_logic.py` check the stylesheet and scripts and run the pure frontend modules under
+Node.js. `tests/test_catalogue_queries.py` holds the catalogue search to what plain SQL over the view
+returns and tests the read memo; `tests/test_mail_guard.py` that test addresses never reach a real mail server.
+`tests/test_api_roles.py`,
 `tests/test_website_e2e.py` (TC-xx cases by role) and `tests/test_operations.py` (synthetic demo,
 manoeuvre approval and re-plan, password change and reset, rate limits, e-mail delivery to a local SMTP
 sink, live stream, event-log visibility, provenance, re-entry gate, reconciliation) run against the
@@ -356,15 +422,14 @@ configured databases (point `MYSQL_PORT` at a disposable instance). They create 
 
 ```
 database/mysql/      01_schema.sql 02_routines.sql 03_views.sql 04_security.sql 05_seed.sql 06_extensions.sql 07_operations.sql ownership_transfers.csv
-orbitwatch/          config, db (MySQL pools per role, MongoDB), orbital (SGP4, TLE/OMM), auth, mongo_cluster, mysql_setup, certs,
+orbitwatch/          config, db (MySQL pools per role, MongoDB), orbital (SGP4, TLE/OMM), auth, mongo_cluster, mysql_setup,
                      events (event log), notify (e-mail outbox), ratelimit, decisions (approval + simulation), demo (synthetic),
-                     reconcile, verify, server (cheroot TLS, supervised service)
+                     reconcile, verify, server (cheroot TLS, the localhost certificate, supervised service)
 orbitwatch/jobs/     catalog, ingest, screening, aggregate, reentry, spacetrack, spaceweather, backup, runner, scheduler, sources
 orbitwatch/physics/  collision (Foster Pc), maneuver (CW + SLSQP), ground (passes), spaceweather (NOAA)
 orbitwatch/agent/    tools (deterministic) and orchestrator (Groq tool-calling loop, guardrails, fallback)
 orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, visual, reports, admin, landing, agent, live, demo
-frontend/            index.html, css/app.css, js/ (app, api, ui, charts, globe-core, agent-panel, live, drawers, tour, glossary-data, views/*)
-legacy/orbitalguard/ the original OrbitalGuard project, unchanged
+frontend/            index.html, css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, diagrams, agent-panel, live, drawers (+ glossary), tour, views/*)
 tests/               pytest suite
 manage.py, ow.cmd    command line
 ```

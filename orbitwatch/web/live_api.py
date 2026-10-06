@@ -13,7 +13,7 @@ import time
 from flask import Blueprint, Response, request, stream_with_context
 
 from orbitwatch import config, db, events
-from orbitwatch.web.common import clean, current_user, int_arg, ok, role_required
+from orbitwatch.web.common import clean, current_user, int_arg, memo, ok, role_required
 
 bp = Blueprint("live_api", __name__, url_prefix="/api")
 
@@ -85,6 +85,10 @@ def event_log():
 
 
 def coverage(account="viewer"):
+    return memo(("coverage", account), lambda: _coverage(account))
+
+
+def _coverage(account):
     row = db.query_one(account, """
         SELECT COUNT(*) AS objects_in_orbit,
                SUM(co.norad_id IS NOT NULL) AS with_orbit,

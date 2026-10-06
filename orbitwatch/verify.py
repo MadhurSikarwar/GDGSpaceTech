@@ -336,7 +336,7 @@ def _caught_up(direct, ports):
 # --------------------------------------------------------------------------------------- HTTPS
 def verify_https(host="127.0.0.1", port=None, redirect_port=None):
     from orbitwatch import auth
-    from orbitwatch.certs import CERT
+    from orbitwatch.server import CERT
     port = port or config.HTTPS_PORT
     redirect_port = redirect_port or config.HTTP_REDIRECT_PORT
     base = f"https://{host}:{port}"

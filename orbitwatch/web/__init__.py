@@ -37,6 +37,7 @@ def create_app(https=True):
 
     from orbitwatch.web import (admin_api, agent_api, auth_api, catalog_api, conjunctions_api, demo_api, landing_api,
                                 live_api, me_api, reports_api, visual_api)
+    from orbitwatch.web.common import memo_clear
     for bp in (auth_api.bp, catalog_api.bp, conjunctions_api.bp, me_api.bp, reports_api.bp, admin_api.bp,
                visual_api.bp, landing_api.bp, agent_api.bp, live_api.bp, demo_api.bp):
         app.register_blueprint(bp)
@@ -51,13 +52,17 @@ def create_app(https=True):
 
     @app.after_request
     def security_headers(resp):
+        # Whatever was written through the API may change what the memoised dashboard aggregates say.
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and resp.status_code < 400 and request.path.startswith("/api/"):
+            memo_clear()
         # Large JSON (globe positions for ~20k objects) compresses about 3x.
         if (resp.status_code == 200 and resp.mimetype == "application/json" and not resp.direct_passthrough
                 and "gzip" in request.headers.get("Accept-Encoding", "")
                 and "Content-Encoding" not in resp.headers):
             data = resp.get_data()
             if len(data) > 20_000:
-                resp.set_data(gzip.compress(data, compresslevel=5))
+                # level 2 gzips the 2 MB globe positions in 30 ms (level 5: 86 ms) for 15% more bytes
+                resp.set_data(gzip.compress(data, compresslevel=2 if len(data) > 400_000 else 5))
                 resp.headers["Content-Encoding"] = "gzip"
                 resp.headers["Vary"] = "Accept-Encoding"
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")

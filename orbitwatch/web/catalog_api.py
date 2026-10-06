@@ -4,19 +4,31 @@ import re
 from flask import Blueprint, abort, request
 
 from orbitwatch import db
-from orbitwatch.web.common import (account, clean, csv_response, current_user, int_arg, ok, page_args,
+from orbitwatch.web.common import (account, clean, csv_response, current_user, int_arg, memo, ok, page_args,
                                    require_analyst, wants_csv)
 
 bp = Blueprint("catalog_api", __name__, url_prefix="/api")
 
 OBJECT_TYPES = ("Payload", "Rocket Body", "Debris", "Unknown")
-SORTS = {"name": "name", "norad": "norad_id", "launch": "launch_date DESC", "perigee": "perigee_km",
-         "type": "object_type, name"}
+# sort key -> (extra join, ORDER BY) over space_object (alias so). Every order ends in the primary key, so the pages
+# of one search never overlap or skip a row when names or dates tie.
+SORTS = {
+    "norad": ("", "so.norad_id"),
+    "name": ("", "so.name, so.norad_id"),
+    "launch": (" LEFT JOIN launch l ON l.launch_id = so.launch_id", "l.launch_date DESC, so.norad_id"),
+    "perigee": (" LEFT JOIN current_orbit co ON co.norad_id = so.norad_id", "co.perigee_km, so.norad_id"),
+    "type": ("", "so.object_type, so.name, so.norad_id"),
+}
+_VIEW_COLUMNS = re.compile(r"\b(?:so|l|co)\.")      # the same order, written for the columns of v_object_catalog
 
 
 @bp.get("/stats")
 def stats():
     acct = account()
+    return ok(memo(("stats", acct), lambda: _stats(acct)))
+
+
+def _stats(acct):
     counts = db.query_one(acct, """
         SELECT COUNT(*) AS total,
                COUNT(CASE WHEN in_earth_orbit THEN 1 END) AS on_orbit,
@@ -28,23 +40,38 @@ def stats():
           FROM space_object""")
     counts["with_current_orbit"] = db.query_one(acct, "SELECT COUNT(*) AS n FROM current_orbit")["n"]
     counts["watchlist"] = db.query_one(acct, "SELECT COUNT(*) AS n FROM watchlist")["n"]
+    # Objects whose current owner is India (ISRO, NSIL, Pixxel, ...): what the site's readers care most about.
+    india = db.query_one(acct, """
+        SELECT COUNT(*) AS owned,
+               COUNT(CASE WHEN so.in_earth_orbit THEN 1 END) AS in_orbit,
+               COUNT(CASE WHEN so.in_earth_orbit AND so.object_type = 'Payload' THEN 1 END) AS payloads_in_orbit,
+               COUNT(CASE WHEN so.in_earth_orbit AND co.norad_id IS NOT NULL THEN 1 END) AS tracked
+          FROM v_current_owner o JOIN space_object so ON so.norad_id = o.norad_id
+          LEFT JOIN current_orbit co ON co.norad_id = so.norad_id
+         WHERE o.country_code = 'IN'""")
+    counts.update(india_owned=india["owned"], india_in_orbit=india["in_orbit"],
+                  india_payloads_in_orbit=india["payloads_in_orbit"], india_tracked=india["tracked"])
     upcoming = db.query(acct, """
         SELECT risk_level, COUNT(*) AS n FROM conjunction_event
          WHERE time_of_closest_approach BETWEEN UTC_TIMESTAMP() AND UTC_TIMESTAMP() + INTERVAL 7 DAY
          GROUP BY risk_level""")
     threshold = db.query_one(acct, "SELECT config_value FROM system_config WHERE config_key = 'screening_threshold_km'")
-    return ok({
+    return {
         "counts": counts,
         "upcoming_by_risk": {r["risk_level"]: r["n"] for r in upcoming},
         "regions": clean(db.query(acct, "SELECT * FROM v_report_region_counts ORDER BY min_altitude_km")),
         "last_update": {r["job_name"]: clean(r)["last_success"] for r in db.query(acct, "SELECT * FROM v_last_update")},
         "screening_threshold_km": float(threshold["config_value"]) if threshold else None,
-    })
+    }
 
 
 @bp.get("/lookups")
 def lookups():
     acct = account()
+    return ok(memo(("lookups", acct), lambda: _lookups(acct), factor=6))      # changes only with an ingest
+
+
+def _lookups(acct):
     countries = db.query(acct, """
         SELECT c.country_code, c.name, COUNT(*) AS objects
           FROM v_current_owner cw JOIN country c ON c.country_code = cw.country_code
@@ -56,49 +83,57 @@ def lookups():
          GROUP BY o.org_id, o.name ORDER BY objects DESC LIMIT 400""")
     regions = db.query(acct, "SELECT region_id, name, min_altitude_km, max_altitude_km FROM orbit_region "
                              "ORDER BY min_altitude_km")
-    return ok({"object_types": OBJECT_TYPES, "countries": countries, "organisations": orgs,
-               "regions": clean(regions), "risk_levels": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]})
+    return {"object_types": OBJECT_TYPES, "countries": countries, "organisations": orgs,
+            "regions": clean(regions), "risk_levels": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
 
 
 def _object_filters():
+    """The catalogue filters of this request as WHERE conditions on space_object (alias so).
+
+    Searching space_object alone finds the matching ids quickly; the wide v_object_catalog view (five joins, one of
+    them a range join over every orbit) is then read for just those ids. Country, owner, orbit and region are
+    semi-joins, so an object with two current owners still appears once.
+    """
     where, params = [], []
     q = (request.args.get("q") or "").strip()
     if q:
         if q.isdigit():
-            where.append("(norad_id = %s OR name LIKE %s)")
+            where.append("(so.norad_id = %s OR so.name LIKE %s)")
             params += [int(q), f"%{q}%"]
         elif re.match(r"^\d{4}-\d{3}", q):
-            where.append("intl_designator LIKE %s")
+            where.append("so.intl_designator LIKE %s")
             params.append(f"{q}%")
         else:
-            where.append("name LIKE %s")
+            where.append("so.name LIKE %s")
             params.append(f"%{q}%")
     norad = int_arg("norad")
     if norad is not None:
-        where.append("norad_id = %s")
+        where.append("so.norad_id = %s")
         params.append(norad)
     if request.args.get("type") in OBJECT_TYPES:
-        where.append("object_type = %s")
+        where.append("so.object_type = %s")
         params.append(request.args["type"])
     if request.args.get("country"):
-        where.append("country_code = %s")
+        where.append("EXISTS (SELECT 1 FROM v_current_owner cw WHERE cw.norad_id = so.norad_id AND cw.country_code = %s)")
         params.append(request.args["country"])
     if request.args.get("org"):
-        where.append("org_id = %s")
+        where.append("EXISTS (SELECT 1 FROM v_current_owner cw WHERE cw.norad_id = so.norad_id AND cw.org_id = %s)")
         params.append(request.args["org"])
     region = int_arg("region")
     if region is not None:
-        where.append("region_id = %s")
+        where.append("EXISTS (SELECT 1 FROM current_orbit co JOIN orbit_region r "
+                     "ON co.mean_altitude_km >= r.min_altitude_km AND co.mean_altitude_km < r.max_altitude_km "
+                     "WHERE co.norad_id = so.norad_id AND r.region_id = %s)")
         params.append(region)
     status = request.args.get("status", "onorbit")
     if status == "onorbit":
-        where.append("in_earth_orbit")
+        where.append("so.in_earth_orbit")
     elif status == "decayed":
-        where.append("decay_date IS NOT NULL")
+        where.append("so.decay_date IS NOT NULL")
     elif status == "beyond":  # probes and stages around the Sun, Moon, Mars, Lagrange points; docked objects
-        where.append("decay_date IS NULL AND NOT in_earth_orbit")
+        where.append("so.decay_date IS NULL AND NOT so.in_earth_orbit")
     if request.args.get("has_orbit") == "1":
-        where.append("epoch IS NOT NULL")
+        where.append("EXISTS (SELECT 1 FROM current_orbit co WHERE co.norad_id = so.norad_id AND co.epoch IS NOT NULL)")
     return (" WHERE " + " AND ".join(where)) if where else "", params
 
 
@@ -106,16 +141,31 @@ def _object_filters():
 def objects():
     acct = account()
     where, params = _object_filters()
-    order = SORTS.get(request.args.get("sort"), "norad_id")
+    join, order = SORTS.get(request.args.get("sort"), SORTS["norad"])
+    order_params = []
+    q = (request.args.get("q") or "").strip()
+    if request.args.get("sort") == "relevance" and q:
+        # the search box of the command palette: names that start with the term first, then objects still in orbit
+        order, order_params = "(so.name LIKE %s) DESC, so.in_earth_orbit DESC, so.norad_id", [f"{q}%"]
     if wants_csv():
         require_analyst()
-        rows = db.query(acct, f"SELECT * FROM v_object_catalog{where} ORDER BY {order} LIMIT 50000", params)
+        rows = db.query(acct, "SELECT * FROM v_object_catalog WHERE norad_id IN (SELECT so.norad_id FROM space_object so"
+                              f"{where}) ORDER BY {_VIEW_COLUMNS.sub('', order)} LIMIT 50000", params + order_params)
         return csv_response(rows, "orbitwatch_objects.csv")
     page, size = page_args()
-    total = db.query_one(acct, f"SELECT COUNT(*) AS n FROM v_object_catalog{where}", params)["n"]
-    rows = db.query(acct, f"SELECT * FROM v_object_catalog{where} ORDER BY {order} LIMIT %s OFFSET %s",
-                    params + [size, (page - 1) * size])
-    return ok({"total": total, "page": page, "page_size": size, "items": clean(rows)})
+    offset = (page - 1) * size
+    ids = [r["norad_id"] for r in db.query(
+        acct, f"SELECT so.norad_id FROM space_object so{join}{where} ORDER BY {order} LIMIT %s OFFSET %s",
+        params + order_params + [size, offset])]
+    if len(ids) < size and (ids or offset == 0):
+        total = offset + len(ids)                      # a short page is the last one: nothing left to count
+    else:
+        total = db.query_one(acct, f"SELECT COUNT(*) AS n FROM space_object so{where}", params)["n"]
+    rows = {}
+    if ids:
+        for r in db.query(acct, "SELECT * FROM v_object_catalog WHERE norad_id IN (" + ",".join(["%s"] * len(ids)) + ")", ids):
+            rows[r["norad_id"]] = r
+    return ok({"total": total, "page": page, "page_size": size, "items": clean([rows[i] for i in ids if i in rows])})
 
 
 @bp.get("/objects/<int:norad_id>")

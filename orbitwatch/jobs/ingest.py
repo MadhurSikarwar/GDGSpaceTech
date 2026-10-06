@@ -136,9 +136,15 @@ def ensure_objects(cur, element_sets):
     for el in element_sets:
         if el["norad_id"] in known:
             continue
-        intl = el["intl_designator"] if el["intl_designator"] not in used else None
+        # Space-Track's "TBA - TO BE ASSIGNED" tracks have the placeholder designator "UNKNOWN": store none, and
+        # never a designator another object already holds (the column is unique).
+        intl = el["intl_designator"]
         m = re.match(r"^(\d{4}-\d{3})", intl or "")
-        rows.append((el["norad_id"], intl, el["name"][:100], guess_type(el["name"]),
+        if not m or intl in used:
+            intl, m = None, None
+        else:
+            used.add(intl)
+        rows.append((el["norad_id"], intl, (el["name"] or f"NORAD {el['norad_id']}")[:100], guess_type(el["name"] or ""),
                      m.group(1) if m and m.group(1) in launches else None))
         known[el["norad_id"]] = None
     db.bulk_upsert(cur, "INSERT IGNORE INTO space_object (norad_id, intl_designator, name, object_type, launch_id) "
@@ -231,7 +237,11 @@ def run(ctx):
         created, decayed = ensure_objects(cur, sets)
         cur.execute("SELECT norad_id FROM space_object WHERE NOT in_earth_orbit")
         not_orbiting = decayed | {r[0] for r in cur.fetchall()}
-        live = [el for el in sets if el["norad_id"] not in not_orbiting]
+        cur.execute("SELECT norad_id FROM space_object")
+        catalogued = {r[0] for r in cur.fetchall()}
+        # A record whose object could not be added to the catalogue is skipped, never allowed to abort the run.
+        uncatalogued = sum(1 for el in sets if el["norad_id"] not in catalogued)
+        live = [el for el in sets if el["norad_id"] not in not_orbiting and el["norad_id"] in catalogued]
         new, newer, unchanged = upsert_current_orbits(cur, live, "CelesTrak")
         conn.commit()
         cur.close()
@@ -240,7 +250,7 @@ def run(ctx):
     msg = (f"{total} element sets from {downloads} downloads ({len(sets)} objects: {by_source['CelesTrak']} newest from "
            f"CelesTrak, {by_source['Space-Track']} from Space-Track); history: {inserted} new, {duplicates} already "
            f"stored; current_orbit: {new} new, {newer} newer, {unchanged} unchanged; {created} new catalogue objects; "
-           f"{st_note}")
+           f"{st_note}" + (f"; {uncatalogued} skipped (not in the catalogue)" if uncatalogued else ""))
     if failures:
         msg += "; FAILED downloads: " + "; ".join(failures)
     return len(sets), msg

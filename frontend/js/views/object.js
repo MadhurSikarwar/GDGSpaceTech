@@ -1,5 +1,6 @@
 import { csvUrl, del, get, post, qs } from '../api.js';
 import { lineChart, slot } from '../charts.js';
+import { orbitSvg } from '../diagrams.js';
 import { age, empty, errorBox, esc, fmt, h, isoInput, loading, objLink, prov, riskBadge, table, toast, typeTag } from '../ui.js';
 import { updateAlertBadge } from '../app.js';
 
@@ -54,6 +55,7 @@ export async function render(root, { params, app }) {
   grid.appendChild(h(`<section class="card"><div class="card-head"><h2>Current orbit</h2>
       <span class="sub">${orbit ? `epoch ${fmt.dt(orbit.epoch)} · age ${age(orbit.epoch)}` : ''}</span></div>
     ${orbit ? `<p style="margin:-6px 0 12px">${prov({ src: orbit.source, fetched: orbit.fetched_at, model: 'SGP4 mean elements' })}</p>` : ''}
+    ${orbit ? orbitSvg(orbit) : ''}
     ${orbit ? `<dl class="facts">
       <dt>Perigee × apogee</dt><dd>${fmt.num(orbit.perigee_km, 1)} × ${fmt.num(orbit.apogee_km, 1)} km</dd>
       <dt>Mean altitude</dt><dd>${fmt.km(orbit.mean_altitude_km)}</dd>
@@ -106,7 +108,7 @@ export async function render(root, { params, app }) {
   const cbox = conj.lastElementChild;
   if (!d.conjunctions.length) cbox.innerHTML = empty('No close approaches recorded', d.watchlist ? '' : ' Only watchlist objects are screened as primaries; others appear when a watched satellite passes near them.');
   else cbox.appendChild(table([
-    { label: 'TCA (UTC)', render: (r) => `${fmt.dt(r.time_of_closest_approach)}<div class="small muted">${fmt.rel(r.time_of_closest_approach)}</div>` },
+    { label: 'TCA (IST · UTC)', render: (r) => fmt.when(r.time_of_closest_approach) },
     { label: 'Other object', render: (r) => (r.primary_norad === norad ? objLink(r.secondary_norad, r.secondary_name) : objLink(r.primary_norad, r.primary_name)) },
     { label: 'Miss distance', num: true, render: (r) => fmt.km(r.miss_distance_km, 3) },
     { label: 'Rel. velocity', num: true, render: (r) => `${fmt.num(r.relative_velocity, 2)} km/s` },
@@ -129,8 +131,8 @@ async function groundContacts(root, norad) {
     if (!items.length) { box.innerHTML = empty('No contacts in the next 24 hours', ' The ground track never rises above any station’s elevation mask.'); return; }
     box.appendChild(table([
       { label: 'Station', render: (p) => esc(p.station) },
-      { label: 'AOS (UTC)', render: (p) => `${fmt.dt(p.aos)}<div class="small muted">${fmt.rel(p.aos)}</div>` },
-      { label: 'LOS (UTC)', render: (p) => fmt.dt(p.los).slice(11) },
+      { label: 'AOS (IST · UTC)', render: (p) => fmt.when(p.aos) },
+      { label: 'LOS (IST · UTC)', render: (p) => fmt.tod(p.los) },
       { label: 'Duration', num: true, render: (p) => `${fmt.num(p.duration_min, 1)} min` },
       { label: 'Max elevation', num: true, render: (p) => `${fmt.num(p.max_elevation_deg, 1)}°` },
     ], items.slice(0, 20)));

@@ -87,7 +87,9 @@ def simulate(account, a):
         {**objs["secondary"], "norad_id": objs["secondary"]["norad_id"]})
     burn = _burn_time(cand)
     tca = st["tca"]
-    start, end = burn - timedelta(minutes=10), tca + timedelta(minutes=15)
+    # ten minutes of lead-in before the burn, and at least a full low orbit before the encounter, so the
+    # replay can show the spacecraft moving along its orbit before anything happens to it
+    start, end = min(burn - timedelta(minutes=10), tca - timedelta(minutes=95)), tca + timedelta(minutes=15)
     offs = np.arange(0.0, (end - start).total_seconds() + STEP_S, STEP_S)
     jd, fr = orbital.time_grid(start, offs)
     ep, rp, vp = sa.sgp4_array(jd, fr)

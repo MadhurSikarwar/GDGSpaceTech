@@ -1,8 +1,8 @@
 """Database reconciliation: the previous version (OrbitalGuard) against OrbitWatch.
 
 The previous version kept its data in a Supabase Postgres database (the project no
-longer exists) with `orbitalguard.db` (SQLite) as the local copy; that file and its
-earlier versions in git history are what survives. This module compares them with
+longer exists) with `orbitalguard.db` (SQLite) as the local copy; every version of that file
+in git history (and a copy in runtime/archive, if there is one) is what survives. This module compares them with
 OrbitWatch's MySQL catalogue and MongoDB history and, with apply=True, fixes what it
 finds. Nothing is copied blindly:
 
@@ -30,6 +30,7 @@ from pathlib import Path
 
 from orbitwatch import config, db, orbital
 from orbitwatch.jobs.ingest import store_history
+from orbitwatch.notify import is_reserved_address
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +38,6 @@ ARCHIVE_FILE = "orbitalguard.db"
 HISTORY_SOURCE = "OrbitalGuard archive (CelesTrak)"
 SYNTHETIC_SOURCES = {"SyntheticGenerator"}
 TEST_SOURCES = {"unit-test"}
-RESERVED_DOMAINS = {"example.com", "example.org", "example.net"}
-RESERVED_SUFFIXES = (".test", ".invalid", ".localhost", ".example")
 # Agent runs started from the CLI (no requesting user) before the takeover clean-up were development tests.
 TEST_ERA_END = datetime(2026, 10, 5, 14, 0)
 EPOCH_TOLERANCE_S = 0.01                   # a TLE epoch resolves to ~1 ms; OMM epochs carry microseconds
@@ -55,9 +54,7 @@ TABLE_KEYS = {
 }
 
 
-def is_test_email(email):
-    domain = (email or "").rsplit("@", 1)[-1].lower()
-    return domain in RESERVED_DOMAINS or domain.endswith(RESERVED_SUFFIXES)
+is_test_email = is_reserved_address          # accounts on reserved test domains are test fixtures
 
 
 def _ts(value):
@@ -77,7 +74,10 @@ def _git(*args):
 
 
 def archive_snapshots(include_git=True):
-    """[(label, path)] oldest first: every distinct version of orbitalguard.db in git, then the working copy."""
+    """[(label, path)] oldest first: every distinct version of orbitalguard.db in git, then the local copy.
+
+    The file is not part of the repository any more (its versions are in git history); a copy kept in
+    ARCHIVE_DIR (runtime/archive) or, as before, in the repository root is read as well."""
     out, tmp = [], Path(tempfile.mkdtemp(prefix="og-archive-"))
     if include_git:
         commits = _git("log", "--all", "--reverse", "--format=%H", "--", ARCHIVE_FILE).split()
@@ -94,9 +94,9 @@ def archive_snapshots(include_git=True):
             if data[:16] == b"SQLite format 3\x00":
                 path.write_bytes(data)
                 out.append((f"git {c[:7]}", path))
-    work = config.REPO_ROOT / ARCHIVE_FILE
-    if work.exists():
-        out.append(("working copy", work))
+    for label, folder in (("local copy", config.ARCHIVE_DIR), ("working copy", config.REPO_ROOT)):
+        if (folder / ARCHIVE_FILE).exists():
+            out.append((label, folder / ARCHIVE_FILE))
     return out
 
 

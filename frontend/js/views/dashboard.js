@@ -4,7 +4,10 @@ import { get } from '../api.js';
 import { barChart, typeColor } from '../charts.js';
 import { term } from '../drawers.js';
 import { onLive } from '../live.js';
-import { age, empty, errorBox, esc, fmt, h, loading, objLink, prov, riskBadge, synTag, table, typeTag, unavailable } from '../ui.js';
+import { age, countUpIn, empty, errorBox, esc, fmt, h, loading, objLink, prov, riskBadge, synTag, table, typeTag, unavailable } from '../ui.js';
+import { countdown } from '../hud.js';
+import { nextEvents, radarSvg } from '../diagrams.js';
+import { istHM, utcHM } from '../time.js';
 
 const RISK_COLOR = { LOW: 'var(--r-low)', MEDIUM: 'var(--r-medium)', HIGH: 'var(--r-high)', CRITICAL: 'var(--r-critical)' };
 const FRESH = { fresh: ['ok', 'fresh'], stale: ['warn', 'stale'], never: ['bad', 'never run'], archive: ['', 'archive'],
@@ -19,7 +22,7 @@ export async function render(root, { app }) {
   const strip = h(`<div class="mc-strip" aria-label="Key figures">${'<div class="mc-kpi"><div class="skeleton" style="height:58px"></div></div>'.repeat(6)}</div>`);
   root.appendChild(strip);
   // Catalogue and environment: every figure the earlier dashboard showed, kept.
-  const cat = h(`<div class="tiles" aria-label="Catalogue and environment">${'<div class="tile"><div class="skeleton" style="height:52px"></div></div>'.repeat(7)}</div>`);
+  const cat = h(`<div class="tiles quiet" aria-label="Catalogue and environment">${'<div class="tile"><div class="skeleton" style="height:52px"></div></div>'.repeat(6)}</div>`);
   root.appendChild(cat);
   const grid = h(`<div class="mc-grid">
     <section class="card c8 bezel" id="pTimeline"><div class="card-head"><h2>Close approaches · next 72 hours</h2>
@@ -27,6 +30,11 @@ export async function render(root, { app }) {
       <div id="topEvents" style="margin-top:12px"></div></section>
     <section class="card c4" id="pHealth"><div class="card-head"><h2>System health</h2><span class="sub" id="hbAge"></span></div>
       <ul class="health" id="health">${loading()}</ul></section>
+    <section class="card c5 bezel" id="pRadar"><div class="card-head"><h2>Threat radar</h2><span class="sub" id="radarSub"></span></div>
+      <div class="radar" id="radar">${loading()}</div><div class="legend radar-legend" id="radarLegend"></div>
+      <p class="radar-note">Clockwise from the top: time to closest approach · from the centre: miss distance</p></section>
+    <section class="card c7 flush" id="pNext"><div class="card-head"><h2>Next close approaches</h2><span class="sub">live countdown, MEDIUM and above</span></div>
+      <div id="nextList">${loading()}</div></section>
     <section class="card c6"><div class="card-head"><h2>Objects per orbital region</h2><span class="sub">Current_Orbit ⋈ Orbit_Region, by mean altitude</span></div>
       <div class="chart-box short"><canvas id="regionChart" aria-label="Objects per orbital region by type"></canvas></div></section>
     <section class="card c6"><div class="card-head"><h2>${term('coverage', 'Orbital coverage')} by object type</h2><span class="sub" id="covSub"></span></div>
@@ -51,7 +59,6 @@ export async function render(root, { app }) {
 
   // ---- catalogue and environment tiles --------------------------------------
   const cc = stats.counts;
-  const up7 = stats.upcoming_by_risk;
   cat.innerHTML = `
     <div class="tile"><div class="label">Objects catalogued</div><div class="value">${fmt.int(cc.total)}</div>
       <div class="foot">${fmt.int(cc.decayed)} have re-entered</div></div>
@@ -59,17 +66,19 @@ export async function render(root, { app }) {
       <div class="foot">${fmt.int(cc.payloads_on_orbit)} payloads · ${fmt.int(cc.beyond_earth_orbit)} more beyond Earth orbit</div></div>
     <div class="tile"><div class="label">Debris in orbit</div><div class="value">${fmt.int(cc.debris_on_orbit)}</div>
       <div class="foot">${fmt.num(100 * cc.debris_on_orbit / cc.on_orbit, 0)}% of objects in Earth orbit</div></div>
-    <div class="tile"><div class="label">Current orbits</div><div class="value">${fmt.int(cc.with_current_orbit)}</div>
-      <div class="foot">objects being propagated</div></div>
-    <div class="tile"><div class="label">Close approaches · 7 days</div><div class="value">${fmt.int(Object.values(up7).reduce((x, y) => x + y, 0))}</div>
-      <div class="foot">${['CRITICAL', 'HIGH'].filter((r) => up7[r]).map((r) => `${riskBadge(r)} ${fmt.int(up7[r])}`).join(' ') || 'none high-risk'}</div></div>
+    <a class="tile" href="#/catalog?country=IN" title="Objects whose current owner is India (ISRO, NSIL, Pixxel and others)" style="text-decoration:none;color:inherit">
+      <div class="label">India</div><div class="value">${fmt.int(cc.india_in_orbit)}</div>
+      <div class="foot">${fmt.int(cc.india_payloads_in_orbit)} payloads in Earth orbit · ${fmt.int(cc.india_tracked)} with a live orbit</div></a>
     <div class="tile"><div class="label">Watchlist</div><div class="value">${fmt.int(cc.watchlist)}</div>
       <div class="foot">screened within ${fmt.num(stats.screening_threshold_km, 0)} km</div></div>
     <div class="tile sw-tile" id="swTile"><div class="label">${term('kp', 'Space weather')}</div><div class="value">—</div><div class="foot">NOAA SWPC</div></div>`;
+  countUpIn(cat);
   get('/space-weather').then((sw) => {
     const t = cat.querySelector('#swTile');
     t.querySelector('.value').innerHTML = `Kp ${fmt.num(sw.kp, 1)}<small>${esc(sw.activity)}</small>`;
-    t.querySelector('.foot').textContent = `F10.7 ${fmt.num(sw.f107, 0)} sfu · drag ×${fmt.num(sw.drag_scalar, 2)}${sw.live ? '' : ' · fallback'}`;
+    t.querySelector('.foot').textContent = `F10.7 ${fmt.num(sw.f107, 0)} sfu · Ap ${fmt.num(sw.ap, 0)} · drag ×${fmt.num(sw.drag_scalar, 2)}${sw.live ? '' : ' · SIM baseline (NOAA unreachable)'}`;
+    t.title = sw.live ? `NOAA SWPC, Kp interval starting ${fmt.dt(sw.observed_at)}. Drag scalar scales orbit uncertainty in collision probabilities.`
+      : 'NOAA SWPC could not be reached: these are quiet-sun baseline values, not a reading.';
   }).catch(() => {});
 
   // ---- region chart ------------------------------------------------------
@@ -81,6 +90,7 @@ export async function render(root, { app }) {
 
   // ---- system-driven panels (KPI strip, health, coverage, sources) ------
   let markers = [];
+  let counted = false;
   const paintSystem = (s) => {
     if (!s) return;
     const c = stats.counts;
@@ -111,6 +121,7 @@ export async function render(root, { app }) {
       <div class="mc-kpi ${re.available ? '' : 'warn'}"><div class="k">Re-entry model</div><div class="v">${re.available ? fmt.int(re.predictions) : '—'}<small>${re.available ? 'predictions' : 'unavailable'}</small></div>
         <div class="f">${re.active_model ? `model ${esc(re.active_model.model_version)} · median error ${fmt.num(re.active_model.median_ae_days, 1)} d` : 'no model has passed evaluation yet'}</div></div>`;
 
+    if (!counted) { counted = true; countUpIn(strip); }
     const hb = s.scheduler.heartbeat || {};
     $('#hbAge').textContent = hb.heartbeat_at ? `heartbeat ${age(hb.heartbeat_at)} ago` : '';
     const job = (id) => s.jobs.find((j) => j.job_id === id);
@@ -181,7 +192,7 @@ export async function render(root, { app }) {
         y -= hgt;
         const t0 = new Date(now + i * 1800000);
         svg += `<rect x="${i * bw + 1}" y="${y}" width="${Math.max(bw - 2, 1)}" height="${hgt - 1}" rx="1" fill="${RISK_COLOR[r]}">
-          <title>${t0.toISOString().slice(11, 16)}–${new Date(t0.getTime() + 1800000).toISOString().slice(11, 16)} UTC · ${b[r]} ${r}</title></rect>`;
+          <title>${istHM(t0)}–${istHM(new Date(t0.getTime() + 1800000))} IST (${utcHM(t0)}–${utcHM(new Date(t0.getTime() + 1800000))} UTC) · ${b[r]} ${r}</title></rect>`;
       }
     });
     const ticks = [];
@@ -194,9 +205,38 @@ export async function render(root, { app }) {
         <span class="muted">events per 30 minutes</span></div>`;
   };
 
+  // ---- the radar and the countdown list: the same markers, by time and by miss distance -------------
+  const paintRadar = () => {
+    const now = Date.now();
+    const maxKm = stats.screening_threshold_km || 10;
+    const inSpan = markers.filter((m) => Date.parse(m.tca) >= now);
+    const spanH = Math.min(72, Math.max(12, Math.ceil(Math.max(0, ...inSpan.map((m) => (Date.parse(m.tca) - now) / 3600000)) / 6) * 6));
+    $('#radarSub').textContent = `next ${spanH} hours · ${fmt.int(inSpan.length)} events`;
+    $('#radar').innerHTML = inSpan.length ? `${radarSvg(inSpan, { now, spanH, maxKm })}<div class="rd-sweep" aria-hidden="true"></div>`
+      : empty('No MEDIUM or higher close approaches in the next 72 hours');
+    $('#radarLegend').innerHTML = ['CRITICAL', 'HIGH', 'MEDIUM'].map((r) => `<span>${riskBadge(r)} ${fmt.int(inSpan.filter((m) => m.risk === r).length)}</span>`).join('');
+    const next = nextEvents(markers, now, 8);
+    const el = $('#nextList');
+    el.innerHTML = '';
+    if (!next.length) { el.innerHTML = empty('Nothing scheduled in the next 72 hours'); return; }
+    el.appendChild(table([
+      { label: 'T-minus', render: (m) => `<span class="tm" data-tm="${esc(m.tca)}">${countdown(Date.parse(m.tca) - now)}</span>` },
+      { label: 'Objects', render: (m) => `${objLink(m.primary.norad_id, m.primary.name)}<div class="small muted">vs ${esc(m.secondary.name)}</div>` },
+      { label: 'Miss', num: true, render: (m) => fmt.km(m.miss_km, 3) },
+      { label: 'Pc', num: true, render: (m) => (m.pc == null ? '—' : Number(m.pc).toExponential(1)) },
+      { label: 'Risk', render: (m) => riskBadge(m.risk) },
+    ], next, { onRow: (m) => { location.hash = `#/conjunctions?event=${m.event_id}`; } }));
+  };
+  const tick = setInterval(() => {
+    root.querySelectorAll('[data-tm]').forEach((e) => { e.textContent = countdown(Date.parse(e.dataset.tm) - Date.now()); });
+  }, 1000);
+
+  // Every MEDIUM-or-higher close approach of the next 72 hours in one compact request (the globe's marker feed stops at 150,
+  // which used to cut the later events off every count and chart on this page).
   const loadMarkers = async () => {
-    try { markers = (await get('/visual/conjunction-markers')).items; } catch { markers = []; }
+    try { markers = (await get('/conjunctions/upcoming?hours=72')).items; } catch { markers = []; }
     paintTimeline();
+    paintRadar();
     paintSystem(app.system);
   };
 
@@ -205,7 +245,7 @@ export async function render(root, { app }) {
     el.innerHTML = '';
     if (!items.length) return;
     el.appendChild(table([
-      { label: 'TCA (UTC)', render: (r) => `<span class="num">${fmt.dt(r.time_of_closest_approach).replace(' UTC', '')}</span><div class="small muted">${fmt.rel(r.time_of_closest_approach)}</div>` },
+      { label: 'TCA (IST · UTC)', render: (r) => fmt.when(r.time_of_closest_approach) },
       { label: 'Objects', render: (r) => `${objLink(r.primary_norad, r.primary_name)}<div class="small muted">vs ${esc(r.secondary_name)}</div>` },
       { label: 'Miss', num: true, render: (r) => fmt.km(r.miss_distance_km, 3) },
       { label: 'Pc', num: true, render: (r) => (r.probability_of_collision == null ? '—' : Number(r.probability_of_collision).toExponential(1)) },
@@ -261,5 +301,5 @@ export async function render(root, { app }) {
     if (['agent', 'maneuver', 'demo'].includes(d.category)) loadAssessments();
     if (d.category === 'screening') { loadMarkers(); loadTop(); }
   });
-  return () => { window.removeEventListener('ow:system', onSystem); off(); };
+  return () => { window.removeEventListener('ow:system', onSystem); off(); clearInterval(tick); };
 }

@@ -88,7 +88,8 @@ def event_assessments(demo_event_id):
 
 @bp.get("/events/<int:demo_event_id>/track")
 def event_track(demo_event_id):
-    """Both objects from 30 min before to 30 min after TCA (Earth-fixed km, every 10 s); the secondary is SYNTHETIC."""
+    """Both objects around TCA (Earth-fixed km; 30 min either side every 10 s unless ?before=&after=&step= say
+    otherwise); the secondary is SYNTHETIC."""
     import numpy as np
     acct = account()
     ev = db.query_one(acct, f"""
@@ -101,7 +102,8 @@ def event_track(demo_event_id):
     target = db.query_one(acct, f"SELECT norad_id, epoch, {', '.join(orbital.ELEMENT_FIELDS)} FROM current_orbit "
                                 "WHERE norad_id = %s", (ev["target_norad"],))
     tca = ev["time_of_closest_approach"]
-    offsets = np.arange(-1800, 1801, 10.0)
+    from orbitwatch.web.conjunctions_api import track_window
+    offsets = track_window()
     jd, fr = orbital.time_grid(tca, offsets)
     out = {"tca": clean({"t": tca})["t"], "offsets_s": offsets.tolist(), "objects": [], "synthetic": True}
     for el, ident in ((target, target["norad_id"] if target else None), ({**ev, "norad_id": 0}, ev["designation"])):

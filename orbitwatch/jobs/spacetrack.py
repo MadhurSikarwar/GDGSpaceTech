@@ -77,8 +77,20 @@ class SpaceTrack:
         self.logout()
 
     def login(self):
-        resp = self.session.post(f"{config.SPACETRACK_BASE_URL}/ajaxauth/login",
-                                 data={"identity": self.user, "password": self.password}, timeout=60)
+        # A network or TLS hiccup (the site sometimes presents an incomplete certificate chain from one of its
+        # edge servers) is retried with back-off; certificate checking itself is never relaxed. A refused
+        # login is not retried: repeated bad logins can lock the account.
+        resp = None
+        for attempt, wait in enumerate((3, 10, 30, None), start=1):
+            try:
+                resp = self.session.post(f"{config.SPACETRACK_BASE_URL}/ajaxauth/login",
+                                         data={"identity": self.user, "password": self.password}, timeout=60)
+                break
+            except requests.RequestException as exc:
+                if wait is None:
+                    raise
+                log.warning("Space-Track login attempt %d failed (%s); retrying in %d s", attempt, exc, wait)
+                time.sleep(wait)
         if resp.status_code != 200 or "Failed" in resp.text:
             raise RuntimeError("Space-Track login failed: check SPACETRACK_USERNAME / SPACETRACK_PASSWORD")
         self.logged_in = True

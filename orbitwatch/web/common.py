@@ -1,13 +1,15 @@
 """Shared helpers for the API: current user, role checks, database account choice, CSV export."""
 import csv
 import io
+import threading
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from functools import wraps
 
 from flask import Response, abort, g, jsonify, request, session
 
-from orbitwatch import auth
+from orbitwatch import auth, config
 
 ROLE_RANK = {"viewer": 1, "analyst": 2, "admin": 3}
 
@@ -85,6 +87,46 @@ def clean(rows):
     if isinstance(rows, (list, tuple)):
         return [clean(v) if isinstance(v, (dict, list, tuple)) else to_json(v) for v in rows]
     return to_json(rows)
+
+
+_memo = {}
+_memo_gates = {}
+_memo_lock = threading.Lock()
+_memo_generation = 0
+
+
+def memo(key, build, factor=1.0):
+    """build()'s result, reused for READ_CACHE_S * factor seconds (0 = always build).
+
+    The dashboard counts, the filter lookups and the data coverage each scan tens of thousands of rows (0.2 to 0.6 s)
+    but change only when a job or an administrator changes data. One build runs at a time per key: requests that
+    arrive meanwhile wait and share its result instead of repeating the scan. memo_clear() drops everything. The
+    returned object is shared between requests: copy it before changing it.
+    """
+    ttl = config.READ_CACHE_S * factor
+    if ttl <= 0:
+        return build()
+    hit = _memo.get(key)
+    if hit and time.monotonic() - hit[0] < ttl:
+        return hit[1]
+    with _memo_lock:
+        gate = _memo_gates.setdefault(key, threading.Lock())
+    with gate:
+        hit = _memo.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+        generation = _memo_generation
+        value = build()
+        if generation == _memo_generation:        # not if a write cleared the memo while this was being built
+            _memo[key] = (time.monotonic(), value)
+        return value
+
+
+def memo_clear():
+    global _memo_generation
+    with _memo_lock:
+        _memo_generation += 1
+        _memo.clear()
 
 
 def ok(payload=None, status=200):

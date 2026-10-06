@@ -4,6 +4,8 @@
 // recessive grid, a legend whenever there is more than one series, and a
 // table view beside every chart for exact values.
 
+import { bothDateTime } from './time.js';
+
 const live = new Set();
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -70,7 +72,7 @@ export function lineChart(canvas, { series, yTitle = '' }) {
   opts.scales.x = { ...opts.scales.x, type: 'linear',
     ticks: { ...opts.scales.x.ticks, maxTicksLimit: 8, callback: (v) => new Date(v).toISOString().slice(0, 10) } };
   opts.plugins.tooltip.callbacks = {
-    title: (items) => new Date(items[0].parsed.x).toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    title: (items) => bothDateTime(items[0].parsed.x),
   };
   opts.interaction = { mode: 'nearest', axis: 'x', intersect: false };
   const chart = new window.Chart(canvas, {

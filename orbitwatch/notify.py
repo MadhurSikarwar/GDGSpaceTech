@@ -15,7 +15,7 @@ import logging
 import smtplib
 import ssl
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 from orbitwatch import config, db, events
@@ -25,6 +25,22 @@ log = logging.getLogger(__name__)
 
 BACKOFF_MIN = (1, 5, 15, 60, 180)
 RISK_ORDER = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+# Domains reserved for tests and examples (RFC 2606): no mail server accepts them. Sent through a real server they only
+# bounce back into the sender's own inbox (the suite's @example.test accounts did exactly that through Gmail).
+RESERVED_DOMAINS = {"example.com", "example.org", "example.net"}
+RESERVED_SUFFIXES = (".test", ".invalid", ".localhost", ".example")
+RESERVED_NOTE = "not sent: the address is on a domain reserved for tests and examples (RFC 2606)"
+
+
+def is_reserved_address(address):
+    domain = (address or "").rsplit("@", 1)[-1].lower()
+    return domain in RESERVED_DOMAINS or domain.endswith(RESERVED_SUFFIXES)
+
+
+def _local_smtp():
+    """A server on this machine (a development sink) may take any address; only a real one must not see test addresses."""
+    return (config.SMTP_HOST or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
 
 
 def mail_from():
@@ -79,15 +95,22 @@ def dispatch(ctx=None, limit=50, only_to=None):
         raise SkipJob("no e-mail due")
     with db.mysql_conn("jobs") as conn:
         cur = conn.cursor(dictionary=True)
-        cur.execute(f"""SELECT email_id FROM email_outbox WHERE status = 'queued' AND next_attempt_at <= NOW(3){flt}
+        cur.execute(f"""SELECT email_id, to_address FROM email_outbox WHERE status = 'queued' AND next_attempt_at <= NOW(3){flt}
                          ORDER BY next_attempt_at LIMIT %s FOR UPDATE SKIP LOCKED""", (*only, limit))
-        ids = [r["email_id"] for r in cur.fetchall()]
+        due = cur.fetchall()
+        blocked = [r["email_id"] for r in due if not _local_smtp() and is_reserved_address(r["to_address"])]
+        ids = [r["email_id"] for r in due if r["email_id"] not in blocked]
+        if blocked:
+            cur.execute(f"UPDATE email_outbox SET status = 'cancelled', last_error = %s "
+                        f"WHERE email_id IN ({','.join(['%s'] * len(blocked))})", (RESERVED_NOTE, *blocked))
+            log.info("%s e-mail(s) to reserved test domains cancelled, not sent", len(blocked))
         if ids:
             cur.execute(f"UPDATE email_outbox SET status = 'sending', attempts = attempts + 1 "
                         f"WHERE email_id IN ({','.join(['%s'] * len(ids))})", ids)
         conn.commit()
     if not ids:
-        raise SkipJob(f"{waiting} e-mails waiting for their retry time")
+        raise SkipJob(f"{len(blocked)} e-mails to reserved test domains were cancelled, not sent" if blocked
+                      else f"{waiting} e-mails waiting for their retry time")
     sent = failed = 0
     for email_id in ids:
         row = db.query_one("jobs", "SELECT * FROM email_outbox WHERE email_id = %s", (email_id,))
@@ -130,6 +153,18 @@ def dispatch_soon():
 
 
 # --------------------------------------------------------------------------- alert e-mails
+IST = timedelta(hours=5, minutes=30)   # India Standard Time, UTC+05:30, no daylight saving
+
+
+def both_times(utc_dt, seconds=True):
+    """'2026-10-06 19:39:27 IST (14:09:27 UTC)': e-mails go to readers in India, who read IST."""
+    fmt = "%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M"
+    ist = utc_dt + IST
+    utc_part = utc_dt.strftime("%H:%M:%S" if seconds else "%H:%M") if ist.date() == utc_dt.date() \
+        else utc_dt.strftime("%m-%d " + ("%H:%M:%S" if seconds else "%H:%M"))
+    return f"{ist.strftime(fmt)} IST ({utc_part} UTC)"
+
+
 def _alert_body(a):
     tca = a["time_of_closest_approach"]
     pc = f"{a['probability_of_collision']:.1e}" if a["probability_of_collision"] is not None else "not computed"
@@ -137,7 +172,7 @@ def _alert_body(a):
             f"OrbitWatch recorded a new close approach for an object you follow.\n\n"
             f"  {a['primary_name']} (NORAD {a['primary_norad']})\n"
             f"  vs {a['secondary_name']} (NORAD {a['secondary_norad']}, {a['secondary_type']})\n\n"
-            f"  Time of closest approach: {tca:%Y-%m-%d %H:%M:%S} UTC\n"
+            f"  Time of closest approach: {both_times(tca)}\n"
             f"  Miss distance:            {float(a['miss_distance_km']):.3f} km\n"
             f"  Relative velocity:        {float(a['relative_velocity']):.2f} km/s\n"
             f"  Risk level:               {a['risk_level']}\n"
@@ -170,7 +205,7 @@ def queue_alert_emails(ctx=None):
         if RISK_ORDER.index(a["risk_level"]) < RISK_ORDER.index(a["min_risk_level"]):
             continue
         subject = (f"[OrbitWatch] {a['risk_level']} close approach: {a['primary_name']} vs {a['secondary_name']} "
-                   f"at {a['time_of_closest_approach']:%Y-%m-%d %H:%M} UTC")
+                   f"at {both_times(a['time_of_closest_approach'], seconds=False)}")
         queued += enqueue("alert", a["email"], subject, _alert_body(a), user_id=a["user_id"],
                           dedupe_key=f"alert:{a['alert_id']}")
     if not rows:
@@ -239,7 +274,7 @@ def decision_email(name, d):
     return (f"[OrbitWatch] Manoeuvre {d['status'].lower()}: {d['primary_name']}",
             f"Hello {name},\n\n{d['decided_by_name']} {d['status'].lower()} the recommended avoidance manoeuvre for "
             f"{d['primary_name']} vs {d['secondary_name']} (assessment #{d['assessment_id']}).\n\n"
-            + (f"Burn: {d['delta_v_mps']:.3f} m/s {d['burn_direction']} at {d['burn_time']:%Y-%m-%d %H:%M:%S} UTC "
+            + (f"Burn: {d['delta_v_mps']:.3f} m/s {d['burn_direction']} at {both_times(d['burn_time'])} "
                f"(SIMULATED: OrbitWatch has no command uplink).\n" if d["status"] == "APPROVED" and d.get("delta_v_mps")
                else f"Reason: {d.get('reason') or '-'}\n")
             + f"\n{config.APP_BASE_URL}/#/conjunctions?assessment={d['assessment_id']}\n")

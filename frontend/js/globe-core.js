@@ -51,14 +51,16 @@ function gibsLayer(C, layer, date, ext) {
   });
 }
 
-export function createViewer(C, container, { interactive = true, creditContainer } = {}) {
+export function createViewer(C, container, { interactive = true, creditContainer, light = false } = {}) {
   // No clock dial, timeline or home button: OrbitWatch draws its own compact time and camera controls.
   const viewer = new C.Viewer(container, {
     baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
     navigationHelpButton: false, fullscreenButton: false, infoBox: false, selectionIndicator: false,
     animation: false, timeline: false, shouldAnimate: true, scene3DOnly: true, requestRenderMode: false,
-    msaaSamples: 4, creditContainer: creditContainer || undefined,
+    // `light` is for a decorative globe behind text: FXAA only (4x MSAA is the costliest thing on a weak GPU)
+    msaaSamples: light ? 1 : 4, creditContainer: creditContainer || undefined,
   });
+  viewer.targetFrameRate = 60;                 // a 120 or 144 Hz display does not need twice the work
   // fallback first: bundled imagery, always available with the CesiumJS files (and the polar caps)
   const fallback = C.ImageryLayer.fromProviderAsync(
     C.TileMapServiceImageryProvider.fromUrl(C.buildModuleUrl('Assets/Textures/NaturalEarthII')));
@@ -66,16 +68,21 @@ export function createViewer(C, container, { interactive = true, creditContainer
   viewer.imageryLayers.add(fallback);
   try {
     const day = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'BlueMarble_ShadedRelief_Bathymetry', '2004-08-01', 'jpeg'));
-    Object.assign(day, { brightness: 0.96, contrast: 1.06, saturation: 0.92, gamma: 1.0, dayAlpha: 1.0, nightAlpha: 0.0 });
+    Object.assign(day, { brightness: 1.12, contrast: 1.1, saturation: 1.12, gamma: 1.0, dayAlpha: 1.0, nightAlpha: 0.0 });
     const night = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'VIIRS_Black_Marble', '2016-01-01', 'png'));
     Object.assign(night, { dayAlpha: 0.0, nightAlpha: 1.0, brightness: 1.5, contrast: 1.1, saturation: 0.75 });
     // if NASA GIBS is unreachable its tiles never arrive and the Natural Earth fallback underneath shows
   } catch { /* GIBS unavailable: fallback imagery only */ }
-  viewer.imageryLayers.addImageryProvider(new C.GridImageryProvider({
-    cells: 2, color: C.Color.fromCssColorString('#a9c8ea').withAlpha(0.055), glowWidth: 0,
-    glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.TRANSPARENT,
-  }));
+  if (!light) {
+    viewer.imageryLayers.addImageryProvider(new C.GridImageryProvider({
+      cells: 2, color: C.Color.fromCssColorString('#a9c8ea').withAlpha(0.055), glowWidth: 0,
+      glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.TRANSPARENT,
+    }));
+  }
   const { scene } = viewer;
+  if (light) scene.globe.maximumScreenSpaceError = 3;      // slightly coarser tiles: fewer to fetch and draw
+  scene.globe.preloadSiblings = true;                      // fetch the tiles next to the visible ones as well
+  scene.globe.tileCacheSize = 200;                         // and keep more of them, so flying back is instant
   scene.globe.enableLighting = true;            // real sun position: the terminator is where it is now
   scene.globe.dynamicAtmosphereLighting = true;
   scene.globe.dynamicAtmosphereLightingFromSun = true;
@@ -89,7 +96,7 @@ export function createViewer(C, container, { interactive = true, creditContainer
   scene.fog.enabled = false;
   scene.highDynamicRange = false;
   scene.postProcessStages.fxaa.enabled = true;
-  if (scene.skyAtmosphere) { scene.skyAtmosphere.brightnessShift = -0.05; scene.skyAtmosphere.saturationShift = -0.15; }
+  if (scene.skyAtmosphere) { scene.skyAtmosphere.brightnessShift = 0.04; scene.skyAtmosphere.saturationShift = 0.05; }   // the blue glow at the limb
   if (!interactive) {
     scene.screenSpaceCameraController.enableInputs = false;
     viewer.canvas.style.pointerEvents = 'none';
@@ -111,6 +118,27 @@ export function subsolarPoint(date = new Date()) {
   let lon = ((ra - gmst(date)) * 180) / Math.PI;
   lon = ((lon + 540) % 360) - 180;
   return { lat: (dec * 180) / Math.PI, lon };
+}
+
+// India is where the site is read: one time zone (IST, UTC+05:30). The globe opens centred on it so the
+// day/night boundary can be read against the IST clock. The box is a bounding box of the Indian region
+// (mainland, Lakshadweep, Andaman and Nicobar), so it also takes in parts of neighbouring countries.
+export const INDIA = { lat: 22.5, lon: 79, box: { south: 6, north: 36, west: 68, east: 98 } };
+
+// Elevation of the Sun (degrees) at a place, from the same low-precision solar position as subsolarPoint.
+export function sunElevation(lat, lon, date = new Date()) {
+  const s = subsolarPoint(date);
+  const r = Math.PI / 180;
+  const sinEl = Math.sin(lat * r) * Math.sin(s.lat * r) + Math.cos(lat * r) * Math.cos(s.lat * r) * Math.cos((lon - s.lon) * r);
+  return Math.asin(Math.max(-1, Math.min(1, sinEl))) / r;
+}
+export const indiaSun = (date = new Date()) => sunElevation(INDIA.lat, INDIA.lon, date);
+// Civil-twilight convention: the Sun between 0 and -6 degrees is dusk or dawn.
+export const sunPhase = (el) => (el > 0 ? 'day' : el > -6 ? 'twilight' : 'night');
+
+// A camera straight above India, high enough to see the whole disc and where the terminator is.
+export function indiaView(C, height = 24_000_000) {
+  return C.Cartesian3.fromDegrees(INDIA.lon, INDIA.lat, height);
 }
 
 // A camera position over the sunlit side, `offset` degrees of longitude towards the evening terminator.
@@ -149,10 +177,18 @@ export function orbitRing(C, temeKm) {
   }, false);
 }
 
+// let the browser draw a frame between two slices of a long job
+const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 const regimeOf = (altKm) => (altKm < 2000 ? 0 : altKm < 35586 ? 1 : altKm < 35986 ? 2 : 3);
 
 export class CatalogCloud {
-  constructor(C, viewer, { span = 60, pixelSize = 2.5, onLoad } = {}) {
+  // minIntervalMs: update the point positions at most this often (0 = every frame). adaptive: update every frame
+  // only while time runs fast; at real time or close to it the points move too little to need more than ~15 Hz.
+  constructor(C, viewer, { span = 60, pixelSize = 2.5, onLoad, minIntervalMs = 0, adaptive = false } = {}) {
+    this.minIntervalMs = minIntervalMs;
+    this.adaptive = adaptive;
+    this.lastUpdate = 0;
     this.C = C;
     this.viewer = viewer;
     this.span = span;
@@ -178,6 +214,20 @@ export class CatalogCloud {
 
   shown(rec) { return rec.live && this.visible.has(rec.type) && this.regimes.has(rec.regime); }
 
+  // How many of the objects now shown have their sub-satellite point inside a lat/lon box.
+  countOver({ south, north, west, east }) {
+    let n = 0;
+    for (const rec of this.order) {
+      if (!rec || !this.shown(rec)) continue;
+      const p = rec.point.position;
+      const lat = (Math.atan2(p.z, Math.hypot(p.x, p.y)) * 180) / Math.PI;
+      if (lat < south || lat > north) continue;
+      const lon = (Math.atan2(p.y, p.x) * 180) / Math.PI;
+      if (lon >= west && lon <= east) n += 1;
+    }
+    return n;
+  }
+
   async load(time) {
     if (this.fetching) return;
     this.fetching = true;
@@ -186,37 +236,48 @@ export class CatalogCloud {
       const iso = C.JulianDate.toDate(time).toISOString();
       const d = await get(`/visual/positions?t=${encodeURIComponent(iso)}&span=${this.span}`);
       if (this.destroyed) return;
-      this.p0 = Float64Array.from(d.pos);
-      this.p1 = Float64Array.from(d.pos2 || d.pos);
-      this.t0 = C.JulianDate.fromIso8601(d.t);
-      this.counts.fill(0);
-      this.regimeCounts.fill(0);
-      this.order = new Array(d.ids.length);
-      this.index = new Map();
+      const p0 = Float64Array.from(d.pos);
+      const p1 = Float64Array.from(d.pos2 || d.pos);
+      // the radius of each point at both snapshots is needed on every update: compute it once
+      const n = d.ids.length;
+      const r0 = new Float64Array(n);
+      const r1 = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        r0[i] = Math.hypot(p0[3 * i], p0[3 * i + 1], p0[3 * i + 2]);
+        r1[i] = Math.hypot(p1[3 * i], p1[3 * i + 1], p1[3 * i + 2]);
+      }
+      const counts = [0, 0, 0, 0];
+      const regimeCounts = [0, 0, 0, 0];
+      const order = new Array(n);
+      const index = new Map();
       const seen = new Set();
-      for (let i = 0; i < d.ids.length; i++) {
+      let created = 0;
+      for (let i = 0; i < n; i++) {
         const id = d.ids[i];
         const type = d.types[i];
-        const alt = Math.hypot(this.p0[3 * i], this.p0[3 * i + 1], this.p0[3 * i + 2]) - EARTH_R;
         let rec = this.records.get(id);
         if (!rec) {
-          const p = new C.Cartesian3(this.p0[3 * i] * 1000, this.p0[3 * i + 1] * 1000, this.p0[3 * i + 2] * 1000);
+          const p = new C.Cartesian3(p0[3 * i] * 1000, p0[3 * i + 1] * 1000, p0[3 * i + 2] * 1000);
           rec = { id, type, point: this.points.add({ position: p, color: this.colors[type], pixelSize: this.pixelSize, id, scaleByDistance: this.scale }) };
           this.records.set(id, rec);
+          // adding ~32,000 points in one go froze the page for a quarter of a second: spread it over several frames
+          if (++created % 2500 === 0) { await pause(); if (this.destroyed) return; }
         }
         rec.type = type;
-        rec.regime = regimeOf(alt);
+        rec.regime = regimeOf(r0[i] - EARTH_R);
         rec.live = true;
         rec.point.show = this.shown(rec);
-        this.order[i] = rec;
-        this.index.set(id, i);
-        this.counts[type] += 1;
-        this.regimeCounts[rec.regime] += 1;
+        order[i] = rec;
+        index.set(id, i);
+        counts[type] += 1;
+        regimeCounts[rec.regime] += 1;
         seen.add(id);
       }
       for (const rec of this.records.values()) {
         if (!seen.has(rec.id)) { rec.live = false; rec.point.show = false; }
       }
+      // the new snapshot goes live in one step, so that no frame pairs old positions with the new order
+      Object.assign(this, { p0, p1, r0, r1, order, index, counts, regimeCounts, t0: C.JulianDate.fromIso8601(d.t) });
       this.error = null;
       if (this.onLoad) this.onLoad(this);
     } catch (err) {
@@ -235,6 +296,12 @@ export class CatalogCloud {
     if (!this.t0) { if (!this.fetching && !this.error) this.load(time); return; }
     const { dt, f } = this.fraction(time);
     if ((dt > this.span * 0.7 || dt < 0) && !this.fetching) this.load(time);
+    const gap = this.adaptive ? (this.viewer.clock.multiplier <= 20 ? 66 : 0) : this.minIntervalMs;
+    if (gap) {
+      const now = performance.now();
+      if (now - this.lastUpdate < gap) return;
+      this.lastUpdate = now;
+    }
     for (let i = 0; i < this.order.length; i++) {
       const rec = this.order[i];
       if (!rec.point.show) continue;
@@ -251,9 +318,9 @@ export class CatalogCloud {
     const x = p0[k] + (p1[k] - p0[k]) * f;
     const y = p0[k + 1] + (p1[k + 1] - p0[k + 1]) * f;
     const z = p0[k + 2] + (p1[k + 2] - p0[k + 2]) * f;
-    const r0 = Math.hypot(p0[k], p0[k + 1], p0[k + 2]);
-    const r1 = Math.hypot(p1[k], p1[k + 1], p1[k + 2]);
-    const scale = ((r0 + (r1 - r0) * f) / (Math.hypot(x, y, z) || 1)) * 1000;
+    const r0 = this.r0[i];
+    const r1 = this.r1[i];
+    const scale = ((r0 + (r1 - r0) * f) / (Math.sqrt(x * x + y * y + z * z) || 1)) * 1000;
     out.x = x * scale;
     out.y = y * scale;
     out.z = z * scale;

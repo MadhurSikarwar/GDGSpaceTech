@@ -27,12 +27,18 @@ def drag_scalar(ap):
     return 1.0 + max(0.0, ap - 7.0) / 50.0
 
 
-def _latest(rows):
+def _latest(rows, only=None):
+    """The record with the newest time tag. NOAA publishes some of these feeds oldest-first and others
+    newest-first (the F10.7 feed is newest-first), so the position in the list says nothing."""
     # The Kp product has been published both as objects and as a header row + lists.
     if rows and isinstance(rows[0], list):
         header = rows[0]
         rows = [dict(zip(header, r)) for r in rows[1:]]
-    return rows[-1]
+    if only:
+        rows = [r for r in rows if only(r)]
+    if not rows:
+        raise ValueError("NOAA feed has no usable records")
+    return max(rows, key=lambda r: str(r.get("time_tag") or ""))
 
 
 def fetch():
@@ -40,7 +46,9 @@ def fetch():
     try:
         h = {"User-Agent": config.HTTP_USER_AGENT}
         kp_row = _latest(requests.get(KP_URL, timeout=10, headers=h).json())
-        f107_row = requests.get(F107_URL, timeout=10, headers=h).json()[-1]
+        # flux at 2800 MHz is the F10.7 index
+        f107_row = _latest(requests.get(F107_URL, timeout=10, headers=h).json(),
+                           only=lambda r: r.get("frequency", 2800) == 2800 and r.get("flux") is not None)
         kp = float(kp_row.get("Kp", kp_row.get("kp_index", 0)))
         ap = float(kp_row.get("a_running", kp_row.get("ap", 7.0)))
         observed = str(kp_row.get("time_tag", "")).replace("Z", "")

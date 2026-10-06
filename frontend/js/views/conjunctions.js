@@ -52,7 +52,7 @@ export async function render(root, { app }) {
       results.innerHTML = '';
       if (!data.items.length) { results.innerHTML = empty('No close approaches match', ' Try “All (incl. past)” or widen the dates.'); return; }
       results.appendChild(table([
-        { label: 'TCA (UTC)', render: (r) => `<span class="num">${fmt.dt(r.time_of_closest_approach).replace(' UTC', '')}</span><div class="small muted">${fmt.rel(r.time_of_closest_approach)}</div>` },
+        { label: 'TCA (IST · UTC)', render: (r) => fmt.when(r.time_of_closest_approach) },
         { label: 'Watched object', render: (r) => `${objLink(r.primary_norad, r.primary_name)}<div class="small">${typeTag(r.primary_type)}</div>` },
         { label: 'Other object', render: (r) => `${objLink(r.secondary_norad, r.secondary_name)}<div class="small">${typeTag(r.secondary_type)}</div>` },
         { label: 'Miss distance', num: true, render: (r) => fmt.km(r.miss_distance_km, 3) },

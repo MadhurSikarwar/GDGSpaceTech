@@ -14,8 +14,9 @@
     ow spacetrack-import --mode watchlist|decayed [--days N] [--limit N]
     ow backup | restore-mysql DIR | restore-mongo DIR
     ow reconcile [--apply] [--no-git]
-                             compare OrbitWatch with the OrbitalGuard archive (orbitalguard.db and its git
-                             history), find test data, duplicates, orphans and conflicts; --apply fixes them
+                             compare OrbitWatch with the OrbitalGuard archive (orbitalguard.db: every version in
+                             git history, plus a copy in runtime/archive), find test data, duplicates, orphans
+                             and conflicts; --apply fixes them
     ow create-admin          create an Administrator account (prompts for the password)
     ow make-cert             self-signed HTTPS certificate for localhost
     ow serve [--http] [--port N]
@@ -72,7 +73,7 @@ def main(argv=None):
     s.add_argument("what", choices=["restore", "failover", "https", "scheduler", "all"])
     s = sub.add_parser("reconcile")
     s.add_argument("--apply", action="store_true", help="make the changes (default: report only)")
-    s.add_argument("--no-git", action="store_true", help="only the working copy of orbitalguard.db")
+    s.add_argument("--no-git", action="store_true", help="only the local copy of orbitalguard.db (runtime/archive)")
     for name in ("restore-mysql", "restore-mongo"):
         sub.add_parser(name).add_argument("directory")
     s = sub.add_parser("serve")
@@ -164,7 +165,7 @@ def main(argv=None):
     elif args.cmd == "create-admin":
         return create_admin()
     elif args.cmd == "make-cert":
-        from orbitwatch.certs import make_cert
+        from orbitwatch.server import make_cert
         print(make_cert())
     elif args.cmd == "serve":
         from orbitwatch import server
@@ -195,8 +196,8 @@ def create_admin():
 
 def setup():
     from orbitwatch import mongo_cluster, mysql_setup
-    from orbitwatch.certs import make_cert
     from orbitwatch.jobs import catalog, ingest, screening
+    from orbitwatch.server import make_cert
     from orbitwatch.jobs.runner import run_job
     print("1/6 HTTPS certificate:", make_cert())
     print("2/6 MySQL schema, routines, roles and accounts")

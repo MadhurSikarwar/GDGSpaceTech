@@ -4,7 +4,10 @@ import { get, post } from './api.js';
 import { destroyAll } from './charts.js';
 import { initEventLog, initGlossary, toggleDrawer } from './drawers.js';
 import { connect, live, onLive, reconnect } from './live.js';
+import { initPalette } from './palette.js';
 import { startTour, tourSeen } from './tour.js';
+import { indiaSun, sunPhase } from './globe-core.js';
+import { istHMS, utcHMS } from './time.js';
 import { esc, fmt, toast } from './ui.js';
 
 const RANK = { viewer: 1, analyst: 2, admin: 3 };
@@ -40,6 +43,7 @@ const ROUTES = [
   { re: /^\/conjunctions$/, view: 'conjunctions', title: 'Close approaches' },
   { re: /^\/globe$/, view: 'globe', title: '3D globe', full: true },
   { re: /^\/demo$/, view: 'demo', title: 'Synthetic-debris demo lab' },
+  { re: /^\/insights$/, view: 'insights', title: 'How it works' },
   { re: /^\/alerts$/, view: 'alerts', title: 'My alerts', role: 'viewer' },
   { re: /^\/account$/, view: 'account', title: 'Account', role: 'viewer' },
   { re: /^\/reports$/, view: 'reports', title: 'Reports', role: 'analyst' },
@@ -59,8 +63,13 @@ const icon = (id) => `<svg><use href="#i-${id}"/></svg>`;
 
 // ------------------------------------------------------------------ clock
 function tickClock() {
-  const t = new Date().toISOString().slice(11, 19);
-  document.querySelectorAll('[data-utc]').forEach((el) => { el.innerHTML = `<b>${t}</b> UTC`; });
+  const now = new Date();
+  const el = indiaSun(now);
+  const tip = `India Standard Time (UTC+05:30) and UTC. It is ${sunPhase(el)} over India now (Sun ${el >= 0 ? '+' : '−'}${Math.abs(el).toFixed(0)}° at 22.5°N 79°E).`;
+  document.querySelectorAll('[data-utc]').forEach((node) => {
+    node.title = tip;
+    node.innerHTML = `<b>${istHMS(now)}</b> IST<span class="tz2"> · ${utcHMS(now)} UTC</span>`;
+  });
 }
 setInterval(tickClock, 1000);
 
@@ -115,6 +124,7 @@ function renderSysbar() {
   const [cls, text] = overall();
   bar.innerHTML = `<button class="status-pill" id="statusBtn" aria-haspopup="dialog" aria-expanded="false" title="System status">
       <span class="dot ${cls}"></span><span class="lbl">${esc(text)}</span><span class="caret">▾</span></button>
+    ${swChip()}
     <span class="utc" data-utc></span>`;
   bar.querySelector('#statusBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleStatusPanel(); });
   if (document.getElementById('statusPanel')) paintStatusPanel();
@@ -132,6 +142,10 @@ function statusRows() {
       <span>Element sets are downloaded and screened automatically. ${fmt.int(s.tracked)} of ${fmt.int(s.catalogued)} catalogued objects in Earth orbit have a public orbit (${fmt.num(s.coverage, 1)}%).</span></div></li>
     <li><span class="dot ${s.schedState}"></span><div><b>Scheduler · ${esc(s.schedText)}</b>
       <span>Runs ingestion, screening, alert e-mails, backups and the re-entry model on a timetable.</span></div></li>
+    <li><span class="dot ${swClass(app.spaceWeather)}"></span><div><b>Space weather · ${app.spaceWeather ? (app.spaceWeather.live ? `Kp ${Number(app.spaceWeather.kp).toFixed(1)}, ${esc(app.spaceWeather.activity.toLowerCase())}` : 'NOAA unreachable') : 'loading'}</b>
+      <span>${app.spaceWeather ? (app.spaceWeather.live
+        ? `NOAA SWPC: F10.7 ${Number(app.spaceWeather.f107).toFixed(0)} sfu, Ap ${Number(app.spaceWeather.ap).toFixed(0)}; solar and geomagnetic activity raises drag, so orbit uncertainty is scaled ×${Number(app.spaceWeather.drag_scalar).toFixed(2)} in collision probabilities. Observed ${esc(fmt.dt(app.spaceWeather.observed_at))}.`
+        : 'No live reading: a quiet-sun baseline is used and labelled SIM until NOAA answers again.') : ''}</span></div></li>
     <li><span class="dot ${s.spacetrack ? 'ok' : ''}"></span><div><b>Space-Track · ${s.spacetrack ? 'connected' : 'not configured'}</b>
       <span>${s.spacetrack ? 'Adds the debris and rocket bodies CelesTrak does not publish.' : 'Needed for the debris and rocket bodies CelesTrak does not publish, orbit history and re-entry training.'}</span></div></li>
     <li><span class="dot ${s.email ? 'ok' : ''}"></span><div><b>E-mail · ${s.email ? 'on' : 'not configured'}</b>
@@ -168,8 +182,22 @@ function toggleStatusPanel() {
   btn.setAttribute('aria-expanded', 'true');
 }
 
+// NOAA space weather (Kp, F10.7, drag scalar), shown as a chip in the top bar and a row in the status panel.
+const swClass = (sw) => (!sw || !sw.live ? 'warn' : sw.activity === 'QUIET' ? 'ok' : sw.activity === 'MODERATE' ? 'warn' : 'bad');
+function swChip() {
+  const sw = app.spaceWeather;
+  if (!sw) return '';
+  const tip = sw.live
+    ? `NOAA SWPC: Kp ${Number(sw.kp).toFixed(2)}, Ap ${Number(sw.ap).toFixed(0)}, F10.7 ${Number(sw.f107).toFixed(0)} sfu, observed ${fmt.dt(sw.observed_at)}. Drag scalar ×${Number(sw.drag_scalar).toFixed(2)} on orbit uncertainty.`
+    : 'NOAA space weather is unreachable: showing a quiet-sun baseline, not a reading.';
+  return `<a class="sw-chip" href="#/dashboard" title="${esc(tip)}"><span class="dot ${swClass(sw)}"></span>`
+    + `<span>Kp ${Number(sw.kp).toFixed(1)}</span><span class="sw-sep">·</span><span>F10.7 ${Number(sw.f107).toFixed(0)}</span>`
+    + `${sw.live ? '' : '<span class="sw-sim">SIM</span>'}</a>`;
+}
+
 async function refreshSystem() {
   try {
+    app.spaceWeather = await get('/space-weather').catch(() => app.spaceWeather || null);
     app.system = await get('/system/status');
     renderSysbar();
     window.dispatchEvent(new CustomEvent('ow:system', { detail: app.system }));
@@ -184,11 +212,91 @@ function navLinks(path) {
   }).join('');
 }
 
+// ------------------------------------------------------------------ navigation that never overlaps
+// The links that fit stay in the bar; the rest move into a "More" menu. An administrator has eight links, and a
+// laptop-width window or a long name chip would otherwise clip the last link under the status chips. One
+// underline (#navInk) slides from the old page link to the new one.
+let navInk = null;
+function fitNav() {
+  const nav = document.getElementById('nav');
+  if (!nav || !nav.clientWidth) return;                       // not shown (phones use the drawer)
+  nav.querySelector('#navMore')?.remove();
+  const links = [...nav.querySelectorAll(':scope > a')];
+  links.forEach((a) => a.classList.remove('folded'));
+  const room = nav.clientWidth;
+  const widths = links.map((a) => a.offsetWidth);
+  let folded = [];
+  if (widths.reduce((sum, w) => sum + w, 0) > room) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.id = 'navMore';
+    more.className = 'nav-more';
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    more.innerHTML = 'More <span class="caret">▾</span>';
+    nav.append(more);
+    let used = more.offsetWidth;
+    let keep = 0;
+    while (keep < links.length && used + widths[keep] <= room) used += widths[keep++];
+    folded = links.slice(keep);
+    folded.forEach((a) => a.classList.add('folded'));
+    more.classList.toggle('active', folded.some((a) => a.classList.contains('active')));
+    more.addEventListener('click', (e) => { e.stopPropagation(); toggleNavMenu(more, folded); });
+  }
+  placeNavInk(nav, folded.length ? nav.querySelector('#navMore.active') : null);
+}
+
+function placeNavInk(nav, moreIfActive) {
+  if (!navInk) { navInk = document.createElement('i'); navInk.className = 'nav-ink'; navInk.setAttribute('aria-hidden', 'true'); }
+  if (navInk.parentNode !== nav) nav.prepend(navInk);
+  const target = moreIfActive || nav.querySelector(':scope > a.active:not(.folded)');
+  nav.classList.toggle('has-ink', !!target);
+  navInk.style.opacity = target ? '1' : '0';
+  if (target) {
+    const pad = parseFloat(getComputedStyle(target).paddingLeft) || 0;
+    navInk.style.width = `${target.offsetWidth - 2 * pad}px`;
+    navInk.style.transform = `translateX(${target.offsetLeft + pad}px)`;
+  }
+}
+
+function toggleNavMenu(btn, folded) {
+  if (document.getElementById('navMenu')) { closeUserMenu(); return; }
+  closeUserMenu();
+  closeStatusPanel();
+  const r = btn.getBoundingClientRect();
+  const m = document.createElement('div');
+  m.className = 'menu';
+  m.id = 'navMenu';
+  m.setAttribute('role', 'menu');
+  Object.assign(m.style, { position: 'fixed', top: `${r.bottom + 6}px`, left: `${Math.max(8, Math.min(r.left, window.innerWidth - 250))}px` });
+  m.innerHTML = folded.map((a) => `<a href="${a.getAttribute('href')}" role="menuitem" class="${a.classList.contains('active') ? 'active' : ''}">${a.innerHTML}</a>`).join('');
+  document.body.appendChild(m);
+  btn.setAttribute('aria-expanded', 'true');
+  m.addEventListener('click', () => setTimeout(closeUserMenu, 0));
+  m.querySelector('a')?.focus();
+}
+
+// what the command palette can jump to: the pages this visitor may open, and a few actions
+function paletteItems() {
+  const pages = NAV.filter(([, , role]) => !role || app.can(role)).map(([href, label]) => ({ label, hint: href.slice(1), href }));
+  pages.unshift({ label: 'Home', hint: '/', href: '#/' });
+  pages.push({ label: 'How it works', hint: '/insights', href: '#/insights' });
+  if (app.user) pages.push({ label: 'Account and notifications', hint: '/account', href: '#/account' });
+  else pages.push({ label: 'Log in', hint: '/login', href: '#/login' }, { label: 'Create account', hint: '/register', href: '#/register' });
+  const actions = [
+    { label: 'Open the event log', hint: 'live feed', run: () => toggleDrawer('log', true) },
+    { label: 'Open the glossary', hint: 'terms', run: () => toggleDrawer('glossary', true) },
+    { label: 'Take the guided tour', hint: 'one minute', run: () => startTour() },
+  ];
+  return { pages, actions };
+}
+
 function renderChrome() {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/';
   document.getElementById('nav').innerHTML = navLinks(path);
   const box = document.getElementById('userbox');
-  const tools = `<button class="icon-btn opt" id="helpBtn" title="Help: guided tour and glossary" aria-label="Help" aria-haspopup="menu" aria-expanded="false">${icon('help')}</button>
+  const tools = `<button class="icon-btn opt" id="searchBtn" title="Search and jump (Ctrl K)" aria-label="Search and jump">${icon('search')}</button>
+    <button class="icon-btn opt" id="helpBtn" title="Help: guided tour and glossary" aria-label="Help" aria-haspopup="menu" aria-expanded="false">${icon('help')}</button>
     <button class="icon-btn" data-drawer="log" title="Event log: what OrbitWatch is doing, live" aria-label="Open the event log" aria-expanded="false">${icon('log')}</button>`;
   if (app.user) {
     const initials = app.user.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
@@ -204,6 +312,7 @@ function renderChrome() {
     box.querySelector('#helpBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleHelpMenu(); });
   }
   renderMobileNav(path);
+  fitNav();
 }
 
 function closeUserMenu() {
@@ -211,6 +320,8 @@ function closeUserMenu() {
   document.getElementById('userBtn')?.setAttribute('aria-expanded', 'false');
   document.getElementById('helpMenu')?.remove();
   document.getElementById('helpBtn')?.setAttribute('aria-expanded', 'false');
+  document.getElementById('navMenu')?.remove();
+  document.getElementById('navMore')?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleHelpMenu() {
@@ -260,7 +371,7 @@ function toggleUserMenu() {
   m.querySelector('a').focus();
 }
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#userMenu, #helpMenu')) closeUserMenu();
+  if (!e.target.closest('#userMenu, #helpMenu, #navMenu, #navMore')) closeUserMenu();
   if (!e.target.closest('#statusPanel, #statusBtn')) closeStatusPanel();
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeUserMenu(); closeStatusPanel(); setMobileNav(false); } });
@@ -289,6 +400,7 @@ function renderMobileNav(path) {
       <button class="icon-btn" id="mnClose" aria-label="Close navigation">${icon('close')}</button></div>
     <nav aria-label="Main">${navLinks(path).replace(/<\/a>/g, '<span class="muted">›</span></a>')}</nav>
     <div class="mn-section"><h3>Tools</h3><div class="mn-tools">
+      <button data-action="search">${icon('search')}Search</button>
       <button data-action="tour">${icon('tour')}Tour</button>
       <button data-drawer="glossary">${icon('book')}Glossary</button>
       <button data-drawer="log">${icon('log')}Event log</button></div></div>
@@ -336,6 +448,19 @@ export async function updateAlertBadge() {
 let cleanup = null;
 let seq = 0;
 
+// A thin line across the top that fills while a page loads: feedback for the views that wait on the database.
+const progress = (() => {
+  const el = document.createElement('div');
+  el.id = 'routeProg';
+  el.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(el);
+  let reset = 0;
+  return {
+    start() { clearTimeout(reset); el.className = ''; void el.offsetWidth; el.className = 'run'; },
+    done() { el.className = 'done'; reset = setTimeout(() => { el.className = ''; }, 600); },
+  };
+})();
+
 async function route() {
   const [rawPath] = location.hash.replace(/^#/, '').split('?');
   const path = rawPath || '/';
@@ -343,6 +468,7 @@ async function route() {
   const params = path.match(r.re)?.slice(1) || [];
   const view = document.getElementById('view');
   const mine = ++seq;
+  progress.start();
 
   if (cleanup) { try { cleanup(); } catch { /* ignore */ } cleanup = null; }
   destroyAll();
@@ -355,6 +481,7 @@ async function route() {
     view.innerHTML = app.user
       ? `<div class="card auth-card bezel"><h1>Not available</h1><p class="muted">This page needs the ${r.role === 'admin' ? 'Administrator' : 'Analyst'} role. An administrator can change your role.</p></div>`
       : `<div class="card auth-card bezel"><h1>Log in required</h1><p class="muted">Log in to see this page.</p><p><a class="btn primary" href="#/login?next=${encodeURIComponent(location.hash)}">Log in</a></p></div>`;
+    progress.done();
     return;
   }
   try {
@@ -366,10 +493,14 @@ async function route() {
     console.error(err);
     if (mine === seq) view.innerHTML = `<div class="error-box">Could not load this page: ${esc(err.message)}</div>`;
   }
+  if (mine === seq) progress.done();
   if (!r.full) view.focus({ preventScroll: true });
 }
 
 window.addEventListener('hashchange', route);
+if ('ResizeObserver' in window) new ResizeObserver(() => fitNav()).observe(document.getElementById('nav'));
+window.addEventListener('resize', fitNav);
+document.fonts?.ready.then(fitNav);
 setInterval(updateAlertBadge, 60000);
 setInterval(refreshSystem, 60000);
 
@@ -417,6 +548,7 @@ function offerTour() {
 (async () => {
   initGlossary();
   initEventLog();
+  initPalette(paletteItems);
   try { await app.refreshUser(); } catch { renderChrome(); }
   renderSysbar();
   booted = true;

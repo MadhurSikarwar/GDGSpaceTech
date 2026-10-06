@@ -295,7 +295,7 @@ def test_ops09_email_is_delivered_with_retries_and_reset_bodies_scrubbed(env, mo
     # 2. the server is up: the retry and a password-reset message are delivered
     sink = Sink()
     port = free_port()
-    ctl = Controller(sink, hostname="127.0.0.1", port=port)
+    ctl = Controller(sink, hostname="127.0.0.1", port=port, ready_timeout=30)    # the default 5 s fails on a busy machine
     ctl.start()
     monkeypatch.setattr(config, "SMTP_PORT", port)
     try:

@@ -16,6 +16,7 @@ CACHE_DIR = RUNTIME_DIR / "cache"
 LOG_DIR = RUNTIME_DIR / "logs"
 BACKUP_DIR = RUNTIME_DIR / "backups"
 CERT_DIR = RUNTIME_DIR / "certs"
+ARCHIVE_DIR = RUNTIME_DIR / "archive"       # a local copy of the previous version's database (orbitalguard.db)
 MODEL_DIR = RUNTIME_DIR / "models"
 MONGO_HOME = RUNTIME_DIR / "mongodb"
 MONGO_DATA_DIR = RUNTIME_DIR / "data" / "mongo"
@@ -81,6 +82,11 @@ def smtp_configured():
 # Development switch: reuse the downloads in CACHE_DIR instead of hitting
 # CelesTrak again (CelesTrak blocks clients that re-download unchanged data).
 USE_CACHE = os.getenv("ORBITWATCH_USE_CACHE", "0").lower() in ("1", "true", "yes")
+
+# Seconds the web process keeps the heavy read-only aggregates (dashboard counts, filter lookups, data coverage).
+# Every successful write through the API clears them at once, so only changes made by the scheduled jobs wait for
+# this long to show. 0 turns the memo off (the test-suite does, so it always reads the database).
+READ_CACHE_S = float(os.getenv("ORBITWATCH_READ_CACHE_S", "20"))
 
 
 def env(name, default=None):
