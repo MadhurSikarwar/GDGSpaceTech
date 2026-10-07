@@ -247,3 +247,67 @@ def test_cq07_upcoming_lists_every_event_of_the_window_in_one_request(site):
     high = c.get("/api/conjunctions/upcoming?hours=72&risk=CRITICAL").json["items"]
     assert all(i["risk"] == "CRITICAL" for i in high) and len(high) <= len(items)
     assert c.get("/api/conjunctions/upcoming?hours=abc").status_code == 400
+
+
+def test_cq08_type_facets_follow_every_other_filter_but_not_the_type(site):
+    c = site["app"].test_client()
+    plain = c.get("/api/objects?country=IN&page_size=1").json
+    assert "facets" not in plain                                   # only when asked for
+    got = c.get("/api/objects?country=IN&type=Debris&facets=type&page_size=1").json
+    facets = got["facets"]["type"]
+    rows = site["db"].query("viewer", """
+        SELECT object_type AS t, COUNT(*) AS n FROM v_object_catalog WHERE country_code = 'IN' AND in_earth_orbit GROUP BY object_type""")
+    assert facets == {r["t"]: r["n"] for r in rows}                # the type filter itself does not narrow the counts
+    assert sum(facets.values()) == plain["total"] and got["total"] == facets["Debris"]
+
+
+def test_cq09_risk_facets_ignore_the_risk_filter_and_a_window_ahead_reads_forwards(site):
+    from datetime import datetime, timedelta, timezone
+    c = site["app"].test_client()
+    both = c.get("/api/conjunctions?risk=HIGH,CRITICAL&facets=risk&page_size=1").json
+    every = c.get("/api/conjunctions?page_size=1").json
+    assert "facets" not in every                                         # only when asked for
+    assert sum(both["facets"]["risk"].values()) == every["total"]        # counts for every risk level, whatever is chosen
+    assert both["total"] == both["facets"]["risk"].get("HIGH", 0) + both["facets"]["risk"].get("CRITICAL", 0)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    window = f"from={now.isoformat()}Z&to={(now + timedelta(hours=24)).isoformat()}Z&when=upcoming&page_size=200"
+    items = c.get(f"/api/conjunctions?{window}").json["items"]
+    times = [i["time_of_closest_approach"] for i in items]
+    assert items and times == sorted(times)                              # soonest first
+
+
+def test_cq16_the_facet_routes_give_the_counts_the_parameter_gives(site):
+    c = site["app"].test_client()
+    for query in ("country=IN", "q=STARLINK", "status=all", "has_orbit=1"):
+        beside_rows = c.get(f"/api/objects?{query}&type=Debris&facets=type&page_size=1").json["facets"]
+        assert c.get(f"/api/objects/facets?{query}&type=Debris").json == beside_rows        # the type filter does not narrow them
+    for query in ("risk=HIGH", "when=all", "q=STARLINK"):
+        beside_rows = c.get(f"/api/conjunctions?{query}&facets=risk&page_size=1").json["facets"]
+        assert c.get(f"/api/conjunctions/facets?{query}").json == beside_rows
+    assert c.get("/api/objects/facets?norad=abc").status_code == 400                        # a bad filter is refused as in the list
+
+
+def test_cq17_the_facet_routes_are_kept_in_the_memo(site, memo, monkeypatch):
+    from orbitwatch import db
+    c = site["app"].test_client()
+    objects = c.get("/api/objects/facets?country=IN").json
+    events = c.get("/api/conjunctions/facets?when=all&from=2026-10-07T10:15:11.123Z").json
+
+    def no_database(*args, **kwargs):
+        raise AssertionError("served from the database, not from the memo")
+
+    monkeypatch.setattr(db, "query", no_database)
+    assert c.get("/api/objects/facets?country=IN").json == objects
+    assert c.get("/api/conjunctions/facets?when=all&from=2026-10-07T10:15:59.999Z").json == events      # the same minute is the same key
+
+
+def test_cq18_the_memo_has_a_ceiling_and_frees_what_has_expired(memo, monkeypatch):
+    from orbitwatch import config
+    monkeypatch.setattr(config, "READ_CACHE_S", 0.2)
+    monkeypatch.setattr(memo, "_MEMO_MAX", 10)
+    for i in range(60):
+        memo.memo(("search", i), lambda: "result")             # keys that come from request arguments: a search term, a date
+    assert len(memo._memo) == 10 and len(memo._memo_gates) <= 21        # the first ten stay; the rest were answered but not kept
+    time.sleep(0.3)
+    assert memo.memo("new", lambda: "kept") == "kept"
+    assert list(memo._memo) == ["new"]                                  # what had expired made room

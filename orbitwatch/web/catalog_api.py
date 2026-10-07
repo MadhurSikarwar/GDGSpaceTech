@@ -87,7 +87,7 @@ def _lookups(acct):
             "regions": clean(regions), "risk_levels": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
 
 
-def _object_filters():
+def _object_filters(skip=()):
     """The catalogue filters of this request as WHERE conditions on space_object (alias so).
 
     Searching space_object alone finds the matching ids quickly; the wide v_object_catalog view (five joins, one of
@@ -110,7 +110,7 @@ def _object_filters():
     if norad is not None:
         where.append("so.norad_id = %s")
         params.append(norad)
-    if request.args.get("type") in OBJECT_TYPES:
+    if "type" not in skip and request.args.get("type") in OBJECT_TYPES:
         where.append("so.object_type = %s")
         params.append(request.args["type"])
     if request.args.get("country"):
@@ -137,6 +137,25 @@ def _object_filters():
     return (" WHERE " + " AND ".join(where)) if where else "", params
 
 
+def _type_facets(acct):
+    """How many objects there are of each type under every other filter of this request: the numbers on the type chips."""
+    fwhere, fparams = _object_filters(skip=("type",))
+    return {r["t"]: r["n"] for r in db.query(
+        acct, f"SELECT so.object_type AS t, COUNT(*) AS n FROM space_object so{fwhere} GROUP BY so.object_type", fparams)}
+
+
+FACET_ARGS = ("q", "norad", "country", "org", "region", "status", "has_orbit")
+
+
+@bp.get("/objects/facets")
+def object_facets():
+    """The type counts alone. They are a GROUP BY over every matching row, so the catalogue asks for them in a request of
+    its own, beside the one for the table, and the table never waits for them. Kept for a minute (see common.memo)."""
+    acct = account()
+    key = ("object_facets", acct, *(request.args.get(k) or "" for k in FACET_ARGS))
+    return ok({"type": memo(key, lambda: _type_facets(acct), factor=3)})
+
+
 @bp.get("/objects")
 def objects():
     acct = account()
@@ -161,11 +180,15 @@ def objects():
         total = offset + len(ids)                      # a short page is the last one: nothing left to count
     else:
         total = db.query_one(acct, f"SELECT COUNT(*) AS n FROM space_object so{where}", params)["n"]
+    facets = {"type": _type_facets(acct)} if request.args.get("facets") == "type" else None
     rows = {}
     if ids:
         for r in db.query(acct, "SELECT * FROM v_object_catalog WHERE norad_id IN (" + ",".join(["%s"] * len(ids)) + ")", ids):
             rows[r["norad_id"]] = r
-    return ok({"total": total, "page": page, "page_size": size, "items": clean([rows[i] for i in ids if i in rows])})
+    out = {"total": total, "page": page, "page_size": size, "items": clean([rows[i] for i in ids if i in rows])}
+    if facets is not None:
+        out["facets"] = facets
+    return ok(out)
 
 
 @bp.get("/objects/<int:norad_id>")

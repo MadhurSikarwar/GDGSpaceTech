@@ -304,6 +304,21 @@ through perigee and apogee, the LEO and GEO boundaries), and on the globe a sele
 brackets and a live altitude and position readout that follow it. A thin line across the top shows a page loading. All of
 it respects `prefers-reduced-motion`, and the landing page's HUD is hidden on narrow screens.
 
+**Exploring.** On the first visit of a browser session the camera descends from deep space to the hero view (it waits for
+the imagery, and never runs for reduced motion or a page that is already scrolled). The globe has a **time scrubber** that
+moves the clock a day either way, over a strip that shows how many close approaches fall in each hour
+(`/api/conjunctions/upcoming?hours=24&back=24`); a selected object can show its **ground track**, and the **orbit shells**
+layer draws where LEO ends, the GNSS altitude and the geostationary ring (it is built only when first switched on).
+**Share view** copies a link that restores the time, the camera and the selected object. The catalogue has type chips with
+live counts, filters that clear with a click, sortable headers (NORAD number, name, launch date, perigee) and an altitude
+bar in each row; Close approaches has risk chips with counts and time windows (next 6, 24 or 72 hours, past 24 hours). The
+counts come from requests of their own (`/api/objects/facets`, `/api/conjunctions/facets`, kept briefly in the read memo,
+which has a ceiling), so the table never waits for a GROUP BY over every row. The demo lab draws an **encounter preview**
+that follows the form (miss distance, crossing angle, lead time) before anything is created; the login and register pages
+show the live catalogue size and the countdown to the next close approach. **?** lists the keyboard shortcuts (**g** then
+**h g d c a l i** goes to a page) and an unknown address shows a 404 page. The public pages pass axe-core with no violations,
+text meets WCAG AA contrast, closed drawers and menus are `inert`, and the keyboard returns to the button that opened them.
+
 **Automatic updates.** `ow scheduler` (or `ow service`) runs, with one-at-a-time locks, retries with
 back-off and every attempt in `job_run`:
 
@@ -411,7 +426,7 @@ Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|sche
 The orbit, screening, SQL and catalogue-mapping tests need no database; `tests/test_frontend_files.py` and
 `tests/test_frontend_logic.py` check the stylesheet and scripts and run the pure frontend modules under
 Node.js. `tests/test_catalogue_queries.py` holds the catalogue search to what plain SQL over the view
-returns and tests the read memo; `tests/test_mail_guard.py` that test addresses never reach a real mail server.
+returns, tests the facet counts and the read memo; `tests/test_mail_guard.py` that test addresses never reach a real mail server.
 `tests/test_api_roles.py`,
 `tests/test_website_e2e.py` (TC-xx cases by role) and `tests/test_operations.py` (synthetic demo,
 manoeuvre approval and re-plan, password change and reset, rate limits, e-mail delivery to a local SMTP
@@ -429,7 +444,7 @@ orbitwatch/jobs/     catalog, ingest, screening, aggregate, reentry, spacetrack,
 orbitwatch/physics/  collision (Foster Pc), maneuver (CW + SLSQP), ground (passes), spaceweather (NOAA)
 orbitwatch/agent/    tools (deterministic) and orchestrator (Groq tool-calling loop, guardrails, fallback)
 orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, visual, reports, admin, landing, agent, live, demo
-frontend/            index.html, css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, diagrams, agent-panel, live, drawers (+ glossary), tour, views/*)
+frontend/            index.html, css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, shortcuts, diagrams, agent-panel, live, drawers (+ glossary), tour, views/*)
 tests/               pytest suite
 manage.py, ow.cmd    command line
 ```

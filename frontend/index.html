@@ -6,6 +6,10 @@
 <title>OrbitWatch</title>
 <meta name="description" content="Orbital operations console: the full space-object catalogue, the history of every orbit, SGP4 close-approach screening of watched satellites, collision probability, decision support and alerts.">
 <meta name="theme-color" content="#04070b">
+<meta property="og:type" content="website">
+<meta property="og:title" content="OrbitWatch: a live orbital operations console">
+<meta property="og:description" content="Every catalogued satellite and piece of debris on a live 3D globe, close approaches screened with SGP4, and the decisions behind them.">
+<meta name="twitter:card" content="summary">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,6 +22,7 @@
 <link rel="modulepreload" href="/js/drawers.js">
 <link rel="modulepreload" href="/js/live.js">
 <link rel="modulepreload" href="/js/palette.js">
+<link rel="modulepreload" href="/js/shortcuts.js">
 <link rel="modulepreload" href="/js/tour.js">
 <link rel="modulepreload" href="/js/globe-core.js">
 <link rel="modulepreload" href="/js/time.js">
@@ -34,6 +39,7 @@
     <symbol id="i-log" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></g></symbol>
     <symbol id="i-help" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6M12 17v.4"/></g></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></g></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3 3.2 15 0 18M12 3c-3.2 3-3.2 15 0 18"/></g></symbol>
     <symbol id="i-tour" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></g></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></g></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L20 3M16 7l3 3M14 9l2 2"/></g></symbol>
@@ -44,6 +50,8 @@
   </defs>
 </svg>
 <a class="sr-only" href="#view">Skip to content</a>
+<noscript><p style="margin:0;padding:18px 24px;font:14px/1.5 system-ui,sans-serif;background:#10141a;color:#eef1f5">OrbitWatch draws its globe, tables and charts with JavaScript. Please turn it on for this site.</p></noscript>
+<button type="button" class="skip" id="skipLink">Skip to the content</button>
 <header class="topbar">
   <button class="icon-btn burger" id="burger" aria-label="Open navigation" aria-controls="mobileNav" aria-expanded="false"><svg><use href="#i-menu"/></svg></button>
   <a class="brand" href="#/" aria-label="OrbitWatch home">
@@ -59,10 +67,10 @@
   <div class="userbox" id="userbox"></div>
 </header>
 <div class="scrim hidden" id="scrim"></div>
-<aside class="mobile-nav" id="mobileNav" aria-label="Navigation" aria-hidden="true"></aside>
+<aside class="mobile-nav" id="mobileNav" aria-label="Navigation" aria-hidden="true" inert></aside>
 <main id="view" class="view" tabindex="-1"></main>
-<aside class="drawer" id="glossaryDrawer" aria-label="Glossary" aria-hidden="true"></aside>
-<aside class="drawer" id="logDrawer" aria-label="Event log" aria-hidden="true"></aside>
+<aside class="drawer" id="glossaryDrawer" aria-label="Glossary" aria-hidden="true" inert></aside>
+<aside class="drawer" id="logDrawer" aria-label="Event log" aria-hidden="true" inert></aside>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

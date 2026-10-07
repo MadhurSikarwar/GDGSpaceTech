@@ -5,6 +5,7 @@ import { destroyAll } from './charts.js';
 import { initEventLog, initGlossary, toggleDrawer } from './drawers.js';
 import { connect, live, onLive, reconnect } from './live.js';
 import { initPalette } from './palette.js';
+import { initShortcuts, toggleKeys } from './shortcuts.js';
 import { startTour, tourSeen } from './tour.js';
 import { indiaSun, sunPhase } from './globe-core.js';
 import { istHMS, utcHMS } from './time.js';
@@ -287,6 +288,7 @@ function paletteItems() {
     { label: 'Open the event log', hint: 'live feed', run: () => toggleDrawer('log', true) },
     { label: 'Open the glossary', hint: 'terms', run: () => toggleDrawer('glossary', true) },
     { label: 'Take the guided tour', hint: 'one minute', run: () => startTour() },
+    { label: 'Keyboard shortcuts', hint: '?', run: () => toggleKeys() },
   ];
   return { pages, actions };
 }
@@ -380,11 +382,17 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeUse
 function setMobileNav(open) {
   const nav = document.getElementById('mobileNav');
   const scrim = document.getElementById('scrim');
+  const was = nav.classList.contains('open');
   nav.classList.toggle('open', open);
   nav.setAttribute('aria-hidden', String(!open));
+  nav.inert = !open;
   document.getElementById('burger').setAttribute('aria-expanded', String(open));
   if (open) { scrim.classList.remove('hidden'); requestAnimationFrame(() => scrim.classList.add('on')); nav.querySelector('a, button')?.focus(); }
-  else { scrim.classList.remove('on'); setTimeout(() => scrim.classList.add('hidden'), 200); }
+  else {
+    scrim.classList.remove('on'); setTimeout(() => scrim.classList.add('hidden'), 200);
+    // the closed menu is inert, so the keyboard goes back to the button that opened it, not to the top of the page
+    if (was && (nav.contains(document.activeElement) || document.activeElement === document.body)) document.getElementById('burger').focus({ preventScroll: true });
+  }
   document.body.style.overflow = open ? 'hidden' : '';
 }
 
@@ -422,6 +430,7 @@ function renderMobileNav(path) {
   renderMobileStatus();
 }
 
+document.getElementById('skipLink').addEventListener('click', () => document.getElementById('view').focus());
 document.getElementById('burger').addEventListener('click', () => setMobileNav(!document.getElementById('mobileNav').classList.contains('open')));
 document.getElementById('scrim').addEventListener('click', () => setMobileNav(false));
 document.addEventListener('click', (e) => {
@@ -464,7 +473,8 @@ const progress = (() => {
 async function route() {
   const [rawPath] = location.hash.replace(/^#/, '').split('?');
   const path = rawPath || '/';
-  const r = ROUTES.find((x) => x.re.test(path)) || ROUTES[0];
+  const found = ROUTES.find((x) => x.re.test(path));
+  const r = found || { ...ROUTES[0], title: 'Page not found', landing: false, full: false };
   const params = path.match(r.re)?.slice(1) || [];
   const view = document.getElementById('view');
   const mine = ++seq;
@@ -477,6 +487,14 @@ async function route() {
   document.body.classList.toggle('landing', !!r.landing);
   document.title = `${r.title} · OrbitWatch`;
 
+  if (!found) {
+    view.innerHTML = `<div class="card auth-card bezel"><div class="eyebrow">404</div><h1>That page does not exist</h1>
+      <p class="muted">There is nothing at <span class="mono">${esc(path)}</span>. Search for what you were after (Ctrl K) or start from one of these.</p>
+      <div class="row" style="margin-top:14px"><a class="btn primary" href="#/">Home</a><a class="btn" href="#/globe">Live globe</a>
+      <a class="btn" href="#/catalog">Catalogue</a></div></div>`;
+    progress.done();
+    return;
+  }
   if (r.role && !app.can(r.role)) {
     view.innerHTML = app.user
       ? `<div class="card auth-card bezel"><h1>Not available</h1><p class="muted">This page needs the ${r.role === 'admin' ? 'Administrator' : 'Analyst'} role. An administrator can change your role.</p></div>`
@@ -549,6 +567,7 @@ function offerTour() {
   initGlossary();
   initEventLog();
   initPalette(paletteItems);
+  initShortcuts();
   try { await app.refreshUser(); } catch { renderChrome(); }
   renderSysbar();
   booted = true;

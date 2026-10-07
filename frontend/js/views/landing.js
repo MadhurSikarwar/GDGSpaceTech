@@ -25,10 +25,19 @@ function heroLon(now = new Date()) {
 }
 
 export async function render(root, { app }) {
+  // The first visit of a browser session gets the boot log, the fly-in and the headline fading in. This is decided
+  // before anything is drawn, so that the headline never shows and then blinks out.
+  let first = false;
+  try { if (!REDUCED && !sessionStorage.getItem('ow.boot')) { sessionStorage.setItem('ow.boot', '1'); first = true; } } catch { first = !REDUCED; }
+  if (first) root.classList.add('lp-intro');
   root.innerHTML = template();
   const $ = (s) => root.querySelector(s);
   const timers = [];
   const cleanups = [];
+  if (first) {
+    timers.push(setTimeout(() => root.classList.remove('lp-intro'), 4800));
+    cleanups.push(() => root.classList.remove('lp-intro'));
+  }
 
   const clock = () => { $('#kClock').textContent = bothClock(); };
   clock();
@@ -58,9 +67,7 @@ export async function render(root, { app }) {
   fill(root, data, app);
 
   // A log of the real loading steps (each line turns on when that step finishes), once per browser session.
-  let boot = null;
-  try { if (!REDUCED && !sessionStorage.getItem('ow.boot')) { sessionStorage.setItem('ow.boot', '1'); boot = true; } } catch { boot = !REDUCED; }
-  boot = boot ? bootLog(root, [['elements', 'Element sets'], ['engine', 'Globe engine'], ['cloud', 'Catalogue'], ['tiles', 'Imagery'], ['screen', 'Screening']]) : null;
+  const boot = first ? bootLog(root, [['elements', 'Element sets'], ['engine', 'Globe engine'], ['cloud', 'Catalogue'], ['tiles', 'Imagery'], ['screen', 'Screening']]) : null;
   boot?.done('elements', `${fmt.int(data.counts.with_current_orbit)} objects`);
   boot?.done('screen', `${fmt.int(Object.values(data.week_by_risk).reduce((a, b) => a + b, 0))} this week · ${fmt.num(data.screening_threshold_km || 10, 0)} km`);
 
@@ -81,7 +88,7 @@ export async function render(root, { app }) {
       next: data.upcoming?.[0] || null,
       onJump: (i) => (i === 0 ? window.scrollTo({ top: 0, behavior: 'smooth' }) : stops[i]?.scrollIntoView({ behavior: 'smooth', block: 'center' })) });
     timers.push(setInterval(hud.tick, 1000));
-    const g = startGlobe(C, viewer, root, data, { onPose: hud.update });
+    const g = startGlobe(C, viewer, root, data, { onPose: hud.update, intro: first });
     g.cloud.onLoad = (c) => boot?.done('cloud', `${fmt.int(c.order.length)} points`);
     cloud = g.cloud;
     // ?debug in the page URL exposes the viewer for automated checks (frames can then be rendered and timed by hand)
@@ -203,13 +210,13 @@ function fill(root, data, app) {
     ? '<a class="btn primary lg" href="#/alerts">Go to my alerts <span class="arrow">→</span></a><a class="btn lg ghost-line" href="#/globe">Open the globe</a>'
     : '<a class="btn primary lg" href="#/register">Create an account <span class="arrow">→</span></a><a class="btn lg ghost-line" href="#/globe">Open the globe</a>';
   $('#footer').innerHTML = `<div class="cols">
-      <div><h5>OrbitWatch</h5><p>Satellite and space-debris tracking with close-approach alerts. A Database Management Systems
+      <div><h3>OrbitWatch</h3><p>Satellite and space-debris tracking with close-approach alerts. A Database Management Systems
         (CD252IA) project, Department of Information Science and Engineering, RV College of Engineering.</p></div>
-      <div><h5>Explore</h5><ul><li><a href="#/globe">3D globe</a></li><li><a href="#/catalog">Catalogue</a></li>
+      <div><h3>Explore</h3><ul><li><a href="#/globe">3D globe</a></li><li><a href="#/catalog">Catalogue</a></li>
         <li><a href="#/conjunctions">Close approaches</a></li><li><a href="#/dashboard">Dashboard</a></li><li><a href="#/insights">How it works</a></li></ul></div>
-      <div><h5>Data</h5><ul><li>CelesTrak element sets &amp; SATCAT</li><li>Space-Track.org (18th SDS)</li><li>GCAT — J. McDowell (CC-BY 4.0)</li>
+      <div><h3>Data</h3><ul><li>CelesTrak element sets &amp; SATCAT</li><li>Space-Track.org (18th SDS)</li><li>GCAT — J. McDowell (CC-BY 4.0)</li>
         <li>NOAA SWPC · NASA GIBS · CesiumJS</li></ul></div>
-      <div><h5>Team</h5><ul><li>Madhur Rishi Sikarwar · 1RV24IS067</li><li>Mayur M Deekshith · 1RV24IS069</li></ul></div>
+      <div><h3>Team</h3><ul><li>Madhur Rishi Sikarwar · 1RV24IS067</li><li>Mayur M Deekshith · 1RV24IS069</li></ul></div>
     </div>
     <div class="base"><span>Positions are SGP4 predictions from public element sets: screening-grade, not operational.</span>
       <span>Data as of ${data.last_update.ingest ? esc(fmt.dt(data.last_update.ingest)) : '—'}</span></div>`;
@@ -217,7 +224,7 @@ function fill(root, data, app) {
 
 // ---------------------------------------------------------------------------
 // The globe and the scroll-driven camera.
-function startGlobe(C, viewer, root, data, { onPose } = {}) {
+function startGlobe(C, viewer, root, data, { onPose, intro: introOn = false } = {}) {
   const timers = [];
   viewer.clock.currentTime = C.JulianDate.now();
   viewer.clock.multiplier = REDUCED ? 1 : 30;
@@ -344,6 +351,11 @@ function startGlobe(C, viewer, root, data, { onPose } = {}) {
   const leaning = !REDUCED && matchMedia('(pointer: fine)').matches;
   if (leaning) window.addEventListener('pointermove', onPointer, { passive: true });
   let lastPose = 0;
+  // First visit of a session: the camera descends from deep space to the hero view. It waits (at most 1.8 s) for the
+  // imagery, so that the Earth is not black on the way in, and it never runs for reduced motion or a scrolled page.
+  let intro = introOn && !REDUCED && window.scrollY < 80;
+  let introAt = null;
+  const INTRO_MS = 3400;
   let target = position();
   let smooth = target;
   const onScroll = () => { target = position(); };
@@ -360,6 +372,14 @@ function startGlobe(C, viewer, root, data, { onPose } = {}) {
     last = now;
     smooth += (target - smooth) * (1 - Math.exp(-dt * 9));          // follows the scroll within a fraction of a second
     const k = pose(smooth);
+    if (intro) {
+      if (introAt === null && (viewer.scene.globe.tilesLoaded || now - born > 1800)) introAt = now;
+      const f = introAt === null ? 0 : clamp((now - introAt) / INTRO_MS, 0, 1);
+      const swoop = (1 - f) ** 3;                                  // 1 far out, easing to 0 at the hero view
+      k.range *= 1 + swoop * 5.5;
+      k.heading += swoop * 32;
+      if (f >= 1) intro = false;
+    }
     const drift = REDUCED ? 0 : (now / 1000) * 0.18;           // the Earth turns slowly under the camera
     viewer.camera.lookAt(C.Cartesian3.fromDegrees(k.lon - drift, k.lat, 0),
       new C.HeadingPitchRange(rad(k.heading), rad(k.pitch), k.range));

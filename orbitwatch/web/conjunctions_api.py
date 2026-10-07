@@ -13,7 +13,7 @@ bp = Blueprint("conjunctions_api", __name__, url_prefix="/api/conjunctions")
 RISKS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 
-def _filters():
+def _filters(skip=()):
     where, params = [], []
     norad = int_arg("norad")
     if norad is not None:
@@ -29,7 +29,7 @@ def _filters():
     if not start and not end and request.args.get("when", "upcoming") == "upcoming":
         where.append("time_of_closest_approach >= UTC_TIMESTAMP() - INTERVAL 15 MINUTE")
     risks = [r for r in (request.args.get("risk") or "").split(",") if r in RISKS]
-    if risks:
+    if risks and "risk" not in skip:
         where.append(f"risk_level IN ({','.join(['%s'] * len(risks))})")
         params += risks
     q = (request.args.get("q") or "").strip()
@@ -55,18 +55,41 @@ def list_events():
     total = db.query_one(acct, f"SELECT COUNT(*) AS n FROM v_conjunction_detail{where}", params)["n"]
     rows = db.query(acct, f"SELECT * FROM v_conjunction_detail{where} ORDER BY {order} LIMIT %s OFFSET %s",
                     params + [size, (page - 1) * size])
-    return ok({"total": total, "page": page, "page_size": size, "items": clean(rows)})
+    out = {"total": total, "page": page, "page_size": size, "items": clean(rows)}
+    if request.args.get("facets") == "risk":
+        out["facets"] = {"risk": _risk_facets(acct)}
+    return ok(out)
+
+
+def _risk_facets(acct):
+    """How many events there are of each risk level under every other filter of this request: the numbers on the risk chips."""
+    fwhere, fparams = _filters(skip=("risk",))
+    return {r["risk_level"]: r["n"] for r in db.query(
+        acct, f"SELECT risk_level, COUNT(*) AS n FROM v_conjunction_detail{fwhere} GROUP BY risk_level", fparams)}
+
+
+@bp.get("/facets")
+def facets():
+    """The risk counts alone, in a request of their own so that the table does not wait for them (see /api/objects/facets).
+    A window of time is part of the key to the minute: the pages ask for "now" to the millisecond."""
+    acct = account()
+    key = ("conjunction_facets", acct, *(request.args.get(k) or "" for k in ("q", "norad", "when")),
+           *((request.args.get(k) or "")[:16] for k in ("from", "to")))
+    return ok({"risk": memo(key, lambda: _risk_facets(acct))})
 
 
 @bp.get("/upcoming")
 def upcoming():
     """Every close approach of the next `hours` hours (default 72), compact, for the dashboard's timeline and radar.
 
+    `back` (hours, default 0) also reaches into the past: the globe's time scrubber shows a day either way.
+
     One query without paging or sorting by anything but time, kept for a few seconds (see common.memo): the page that
     draws it needs all of them at once, and the paged list needs a COUNT and a second request for each 500.
     """
     acct = account()
     hours = min(max(int_arg("hours", 72), 1), 168)
+    back = min(max(int_arg("back", 0), 0), 168)
     risks = [r for r in (request.args.get("risk") or "CRITICAL,HIGH,MEDIUM").split(",") if r in RISKS] or ["CRITICAL", "HIGH", "MEDIUM"]
 
     def build():
@@ -74,16 +97,16 @@ def upcoming():
             SELECT event_id, time_of_closest_approach, risk_level, miss_distance_km, probability_of_collision,
                    primary_norad, primary_name, secondary_norad, secondary_name
               FROM v_conjunction_detail
-             WHERE origin = 'orbitwatch' AND time_of_closest_approach BETWEEN UTC_TIMESTAMP() AND UTC_TIMESTAMP() + INTERVAL %s HOUR
+             WHERE origin = 'orbitwatch' AND time_of_closest_approach BETWEEN UTC_TIMESTAMP() - INTERVAL %s HOUR AND UTC_TIMESTAMP() + INTERVAL %s HOUR
                AND risk_level IN ({','.join(['%s'] * len(risks))})
-             ORDER BY time_of_closest_approach""", [hours, *risks])
-        return {"hours": hours, "items": [
+             ORDER BY time_of_closest_approach""", [back, hours, *risks])
+        return {"hours": hours, "back": back, "items": [
             {"event_id": r["event_id"], "tca": clean(r["time_of_closest_approach"]), "risk": r["risk_level"],
              "miss_km": float(r["miss_distance_km"]), "pc": clean(r["probability_of_collision"]),
              "primary": {"norad_id": r["primary_norad"], "name": r["primary_name"]},
              "secondary": {"norad_id": r["secondary_norad"], "name": r["secondary_name"]}} for r in rows]}
 
-    return ok(memo(("upcoming", acct, hours, tuple(risks)), build))
+    return ok(memo(("upcoming", acct, hours, back, tuple(risks)), build))
 
 
 def _orbit(acct, norad_id):

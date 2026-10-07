@@ -4,6 +4,7 @@
 // Synthetic objects live only in the demo tables and are labelled SYNTHETIC everywhere.
 import { del, get, post, qs } from '../api.js';
 import { agentPanel } from '../agent-panel.js';
+import { encounterSvg } from '../diagrams.js';
 import { term } from '../drawers.js';
 import { onLive } from '../live.js';
 import { debounce, empty, errorBox, esc, fmt, h, hashQuery, loading, riskBadge, setHashQuery, synTag, toast } from '../ui.js';
@@ -33,14 +34,16 @@ export async function render(root, { app }) {
         <div class="form-error"></div>
         <div class="row"><button class="btn primary" type="submit" id="injBtn">Inject synthetic debris</button></div>
       </form></section>
-    <section class="card"><div class="card-head"><h2>How the demo works</h2></div>
-      <ol class="small" style="margin:0;padding-left:18px;line-height:1.75;color:var(--ink-2)">
+    <section class="card"><div class="card-head"><h2>Encounter preview</h2><span class="sub">a schematic, redrawn from the numbers on the left</span></div>
+      <div id="encPreview" aria-live="polite"></div>
+      <details class="how"><summary>How the demo works</summary>
+      <ol class="small" style="margin:10px 0 0;padding-left:18px;line-height:1.75;color:var(--ink-2)">
         <li>The target's real current orbit is propagated with SGP4 to the encounter time.</li>
         <li>A debris state is placed there: the target's velocity turned by the crossing angle, offset radially by the miss distance.</li>
         <li>SGP4 mean elements are fitted iteratively until SGP4 itself reproduces that state to under a metre.</li>
         <li>Screening refinement verifies the encounter; Pc uses the same covariance model as real events.</li>
         <li>Run the AI assessment, then approve (simulated execution) or reject with feedback and re-plan.</li>
-        <li>Replay it on the globe, including the burn and the before/after orbits.</li></ol></section></div>`);
+        <li>Replay it on the globe, including the burn and the before/after orbits.</li></ol></details></section></div>`);
   root.appendChild(top);
   const listCard = h(`<section class="card" style="margin-top:14px"><div class="card-head"><h2>Active scenarios</h2>
       <label class="check"><input type="checkbox" id="showArchived"> show archived OrbitalGuard demo data</label></div>
@@ -75,7 +78,26 @@ export async function render(root, { app }) {
     form.elements.target_norad.value = b.dataset.id;
     form.elements.target.value = `${b.dataset.name} · ${b.dataset.id}`;
     results.innerHTML = '';
+    paintPreview();
   });
+
+  // ---- a live preview of the encounter being set up: it follows every number in the form and the target's real orbit ----
+  const orbitOf = new Map();
+  const targetOrbit = (norad) => {
+    if (!orbitOf.has(norad)) orbitOf.set(norad, get(`/objects/${norad}`).then((d) => d.current_orbit).catch(() => null));
+    return orbitOf.get(norad);
+  };
+  let previewSeq = 0;
+  const paintPreview = async () => {
+    const mine = ++previewSeq;
+    const orbit = await targetOrbit(Number(form.elements.target_norad.value));
+    if (mine !== previewSeq) return;
+    const num = (name) => (form.elements[name].value === '' ? NaN : Number(form.elements[name].value));        // an empty box means the default
+    $('#encPreview').innerHTML = encounterSvg({ missKm: num('miss_km'), crossingDeg: num('crossing_deg'),
+      leadH: num('lead_h'), periodMin: orbit?.period_min ?? null, altKm: orbit?.mean_altitude_km ?? null });
+  };
+  form.addEventListener('input', paintPreview);
+  paintPreview();
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();

@@ -12,7 +12,7 @@ import { EncounterReplay, glowCanvas } from '../encounter.js';
 import { ACCENT, CatalogCloud, createViewer, dayView, indiaSun, indiaView, INDIA, loadCesium, orbitRing, REGIMES, RISK_COLORS, sampledOrbit, sampledTrack,
   shapeCanvas, ringCanvas, SYN_COLOR, TYPE_COLORS, TYPE_NAMES } from '../globe-core.js';
 import { istDate, istHMS, utcHMS } from '../time.js';
-import { age, esc, fmt, hashQuery, objLink, prov, riskBadge, setHashQuery, simTag, synTag, typeTag } from '../ui.js';
+import { age, esc, fmt, hashQuery, objLink, prov, riskBadge, setHashQuery, simTag, synTag, toast, typeTag } from '../ui.js';
 
 export async function render(root, { app }) {
   const q = hashQuery();
@@ -31,7 +31,8 @@ export async function render(root, { app }) {
         <div class="chips" id="mkRisk" style="margin:-2px 0 4px 22px"><button class="chip" data-risk="CRITICAL" aria-pressed="true">Critical</button>
           <button class="chip" data-risk="HIGH" aria-pressed="true">High</button><button class="chip" data-risk="MEDIUM" aria-pressed="false">Medium</button></div>
         <label><input type="checkbox" data-layer="demo" checked><i style="background:${SYN_COLOR};border-radius:1px"></i>Synthetic demo objects<span class="count" id="synCount"></span></label>
-        <label><input type="checkbox" data-layer="stations"><i style="background:#c9d4e2;border-radius:1px"></i>Ground stations</label></div></div>
+        <label><input type="checkbox" data-layer="stations"><i style="background:#c9d4e2;border-radius:1px"></i>Ground stations</label>
+        <label><input type="checkbox" data-layer="shells"><i style="background:transparent;border:1px dashed ${ACCENT};border-radius:50%"></i>Orbit shells (LEO, GNSS, GEO)</label></div></div>
       <div class="sect globe-hot" id="hot"></div>
     </div>
     <div class="globe-panel globe-info hidden" id="info" aria-live="polite"></div>
@@ -39,6 +40,18 @@ export async function render(root, { app }) {
     <div class="lock" id="lock" aria-hidden="true"><div class="lock-box"><i></i><i></i><i></i><i></i></div><pre class="lock-ro" id="lockRo"></pre></div>
     <div class="globe-hud" id="hud"></div>
     <div class="globe-credits" id="credits"></div>
+    <div class="globe-timeline" id="timeline" aria-label="Time travel">
+      <button type="button" data-step="-60" title="One hour back">−1 h</button>
+      <div class="tl-track">
+        <div class="tl-bubble" id="tlBubble">LIVE</div>
+        <svg class="tl-density" id="tlDensity" viewBox="0 0 192 10" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <input type="range" id="tlRange" min="-1440" max="1440" step="1" value="0" aria-label="Time, in minutes before or after now">
+        <span class="tl-lab l">−24 H</span><span class="tl-lab c">NOW</span><span class="tl-lab r">+24 H</span>
+      </div>
+      <button type="button" data-step="60" title="One hour forward">+1 h</button>
+      <button type="button" class="tl-now" id="tlNow" title="Back to real time">Now</button>
+      <button type="button" id="tlShare" title="Copy a link to this exact view: time, camera and selected object">Share view</button>
+    </div>
     <div class="globe-toolbar" role="toolbar" aria-label="Camera and time">
       <span class="lbl">VIEW</span>
       <div class="grp"><button data-cam="india" title="Centred on India: day and night follow the IST clock">India</button><button data-cam="globe" title="Whole Earth, sunlit side">Sunlit</button><button data-cam="leo" title="Low Earth orbit">LEO</button>
@@ -111,12 +124,29 @@ export async function render(root, { app }) {
   // ---- selection -------------------------------------------------------------------
   let selected = null;
   let orbitEntity = null;
+  // The ground track: where the object flies over the Earth (the last ten minutes and the next orbit), a dashed line just above the surface.
+  let groundTrack = null;
+  let groundOn = true;
+  let currentOrbit = null;
+  const removeGroundTrack = () => { if (groundTrack) { viewer.entities.remove(groundTrack); groundTrack = null; } };
+  const drawGroundTrack = (orbit) => {
+    removeGroundTrack();
+    if (!groundOn || !orbit?.ecefKm?.length) return;
+    const pts = orbit.ecefKm.map(([x, y, z]) => {
+      const c = C.Cartographic.fromCartesian(new C.Cartesian3(x * 1000, y * 1000, z * 1000));
+      return C.Cartesian3.fromRadians(c.longitude, c.latitude, 3000);
+    });
+    groundTrack = viewer.entities.add({ polyline: { positions: pts, width: 2.2, arcType: C.ArcType.NONE,
+      material: new C.PolylineDashMaterialProperty({ color: C.Color.WHITE.withAlpha(0.8), dashLength: 12 }) } });
+  };
   let marker = null;              // the selected object: a glowing marker with its name, riding the orbit ring
   const info = $('#info');
   const clearSelection = () => {
     if (selected) cloud.highlight(selected, false);
     selected = null;
     if (orbitEntity) { viewer.entities.remove(orbitEntity); orbitEntity = null; }
+    removeGroundTrack();
+    currentOrbit = null;
     if (marker) { viewer.entities.remove(marker); marker = null; }
     stopFollow();
   };
@@ -124,6 +154,33 @@ export async function render(root, { app }) {
     viewer.trackedEntity = undefined;
     $('#followBtn').classList.remove('on');
   }
+  // The orbit itself (closed, inertial), turned with the Earth, with a comet tail where the object was in the last ten minutes.
+  const makeOrbitEntity = (orbit) => viewer.entities.add({
+    polyline: orbit.teme ? { positions: orbitRing(C, orbit.teme), width: 1.6, arcType: C.ArcType.NONE, material: accent.withAlpha(0.8) } : undefined,
+    position: orbit.prop,
+    path: { leadTime: 0, trailTime: 600, width: 4, resolution: 20, material: new C.PolylineGlowMaterialProperty({ glowPower: 0.2, color: accent.withAlpha(0.9) }) },
+  });
+  // The tail and the ground track are sampled around one moment. When the clock moves out of that window (a jump on the time
+  // scrubber, or time running fast) they are sampled again around the moment now shown.
+  let resampling = false;
+  const resampleSelected = async () => {
+    const norad = selected;
+    if (!norad || resampling || replay.active) return;
+    resampling = true;
+    try {
+      const orbit = await sampledOrbit(C, norad, C.JulianDate.addSeconds(viewer.clock.currentTime, -600, new C.JulianDate()), 1.15);
+      if (selected !== norad || viewer.isDestroyed()) return;
+      if (orbitEntity) viewer.entities.remove(orbitEntity);
+      orbitEntity = makeOrbitEntity(orbit);
+      currentOrbit = orbit;
+      drawGroundTrack(orbit);
+    } catch { /* the old sampling stays */ } finally { resampling = false; }
+  };
+  const resampleTimer = setInterval(() => {
+    if (!currentOrbit || !selected) return;
+    const dt = C.JulianDate.secondsDifference(viewer.clock.currentTime, currentOrbit.start);
+    if (dt < 540 || dt > currentOrbit.periodS * 0.6) resampleSelected();
+  }, 2000);
   async function select(norad, fly = false) {
     clearReplay();
     if (selected) cloud.highlight(selected, false);
@@ -146,16 +203,8 @@ export async function render(root, { app }) {
       const from = C.JulianDate.addSeconds(viewer.clock.currentTime, -600, new C.JulianDate());
       const [d, orbit] = await Promise.all([get(`/objects/${norad}`), sampledOrbit(C, norad, from, 1.15).catch(() => null)]);
       if (selected !== norad || viewer.isDestroyed()) return;
-      if (orbit) {
-        // the orbit itself (closed, inertial), turned with the Earth; plus the object riding on it
-        orbitEntity = viewer.entities.add({
-          polyline: orbit.teme ? { positions: orbitRing(C, orbit.teme), width: 1.6, arcType: C.ArcType.NONE,
-            material: accent.withAlpha(0.8) } : undefined,
-          position: orbit.prop,
-          // a comet tail: where it was in the last ten minutes
-          path: { leadTime: 0, trailTime: 600, width: 4, resolution: 20, material: new C.PolylineGlowMaterialProperty({ glowPower: 0.2, color: accent.withAlpha(0.9) }) },
-        });
-      }
+      if (orbit) orbitEntity = makeOrbitEntity(orbit);
+      if (orbit) { currentOrbit = orbit; drawGroundTrack(orbit); } else removeGroundTrack();
       if (marker) marker.label.text = d.object.name;
       const o = d.object;
       const co = d.current_orbit;
@@ -170,10 +219,15 @@ export async function render(root, { app }) {
           <dt>Launched</dt><dd>${fmt.date(o.launch_date)}</dd>
         </dl>
         ${co ? `<p style="margin-top:10px">${prov({ src: co.source, fetched: co.fetched_at })}</p>` : ''}
-        <div class="row" style="margin-top:12px"><button class="btn sm" id="followSel">Follow</button>${objLink(o.norad_id, 'Full details →')}</div>
-        <p class="small muted" style="margin-top:10px">The ring is the object's orbit (SGP4, one full period), drawn in space and turned with the Earth, so it always closes through the object.</p>`;
+        <div class="row" style="margin-top:12px"><button class="btn sm" id="followSel">Follow</button><button class="btn sm" id="trackSel" aria-pressed="${groundOn}" title="The path over the ground: the last ten minutes and the next orbit">Ground track</button>${objLink(o.norad_id, 'Full details →')}</div>
+        <p class="small muted" style="margin-top:10px">The ring is the object's orbit (SGP4, one full period), drawn in space and turned with the Earth, so it always closes through the object. The dashed line is its ground track.</p>`;
       info.querySelector('#closeInfo').addEventListener('click', () => { info.classList.add('hidden'); clearSelection(); });
       info.querySelector('#followSel').addEventListener('click', () => follow());
+      info.querySelector('#trackSel').addEventListener('click', (e) => {
+        groundOn = !groundOn;
+        e.currentTarget.setAttribute('aria-pressed', String(groundOn));
+        drawGroundTrack(currentOrbit);
+      });
     } catch (err) {
       info.innerHTML = `<div>${esc(err.message)}</div>`;
     }
@@ -368,6 +422,24 @@ export async function render(root, { app }) {
     }
   }).catch(() => {});
 
+  // ---- layer: orbit shells (where LEO ends, the GNSS constellations and the geostationary ring) -------------------------
+  // Rings of constant altitude over the equator. A circle around the axis looks the same in the Earth-fixed and the inertial frame,
+  // so they can sit in the Earth-fixed scene without turning. Off by default, and not even built until first switched on: they
+  // matter most when looking from far out, and a layer nobody uses must not cost the globe a draw call.
+  const shellEntities = [];
+  const makeShells = () => {
+    for (const [label, altKm] of [['LEO ends · 2,000 km', 2000], ['GNSS · 20,200 km', 20200], ['GEO · 35,786 km', 35786]]) {
+      const ring = Array.from({ length: 181 }, (_, i) => C.Cartesian3.fromDegrees(i * 2 - 180, 0, altKm * 1000));
+      shellEntities.push(viewer.entities.add({
+        show: false,
+        polyline: { positions: ring, width: 1, arcType: C.ArcType.NONE, material: new C.PolylineDashMaterialProperty({ color: accent.withAlpha(0.55), dashLength: 18 }) },
+        position: C.Cartesian3.fromDegrees(100, 0, altKm * 1000),
+        label: { text: label, font: labelFont, fillColor: accent.withAlpha(0.9), showBackground: true, backgroundColor: bg, backgroundPadding: new C.Cartesian2(5, 3),
+          pixelOffset: new C.Cartesian2(8, -10), horizontalOrigin: C.HorizontalOrigin.LEFT, scale: 0.8, translucencyByDistance: new C.NearFarScalar(2e6, 1, 3e8, 0.35) },
+      }));
+    }
+  };
+
   $('#layers').addEventListener('change', (e) => {
     const layer = e.target.dataset.layer;
     const on = e.target.checked;
@@ -375,6 +447,10 @@ export async function render(root, { app }) {
     if (layer === 'markers') showMarkers();
     if (layer === 'demo') synEntities.forEach((en) => { en.show = on; });
     if (layer === 'stations') stationEntities.forEach((en) => { en.show = on; });
+    if (layer === 'shells') {
+      if (on && !shellEntities.length) makeShells();
+      shellEntities.forEach((en) => { en.show = on; });
+    }
   });
 
   // ---- camera and time ----------------------------------------------------------------
@@ -402,6 +478,87 @@ export async function render(root, { app }) {
     else { viewer.clock.multiplier = Number(t); viewer.clock.shouldAnimate = true; }
   });
 
+  // ---- time travel: scrub a day either way; the strip shows when the close approaches cluster -----------
+  // The slider is minutes from real now. Dragging pauses the clock and moving the thumb sets it; on release the clock runs again
+  // at the speed it had, so the same control scrubs, steps and resumes. Positions follow: the cloud fetches a new SGP4 snapshot.
+  const TL_MIN = 1440;
+  const tl = { range: $('#tlRange'), bubble: $('#tlBubble'), dragging: false, resume: true };
+  const clockOffsetMin = () => (C.JulianDate.toDate(viewer.clock.currentTime).getTime() - Date.now()) / 60000;
+  const setOffsetMin = (m) => {
+    viewer.clock.currentTime = C.JulianDate.fromDate(new Date(Date.now() + m * 60000));
+    viewer.clock.clockRange = C.ClockRange.UNBOUNDED;
+  };
+  const isLive = () => Math.abs(clockOffsetMin()) < 1 && viewer.clock.multiplier === 1 && viewer.clock.shouldAnimate;
+  const paintTimeline = () => {
+    if (replay.active || viewer.isDestroyed()) return;
+    const m = clockOffsetMin();
+    const edge = Math.max(-TL_MIN, Math.min(TL_MIN, m));
+    if (!tl.dragging) tl.range.value = String(Math.round(edge));
+    const mag = Math.abs(m);
+    const rel = mag < 1 ? 'now' : `${m > 0 ? '+' : '−'}${mag >= 60 ? `${Math.floor(mag / 60)} h ${Math.round(mag % 60)} min` : `${Math.round(mag)} min`}`;
+    const live = isLive();
+    tl.bubble.textContent = live ? 'LIVE' : `${istHMS(new Date(Date.now() + m * 60000)).slice(0, 5)} IST · ${rel}`;
+    tl.bubble.style.left = `${((edge + TL_MIN) / (2 * TL_MIN)) * 100}%`;
+    tl.bubble.classList.toggle('live', live);
+  };
+  const tlTimer = setInterval(paintTimeline, 250);
+  const endDrag = () => {
+    if (!tl.dragging) return;
+    tl.dragging = false;
+    viewer.clock.shouldAnimate = tl.resume;
+  };
+  tl.range.addEventListener('pointerdown', () => { tl.dragging = true; tl.resume = viewer.clock.shouldAnimate; viewer.clock.shouldAnimate = false; });
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  tl.range.addEventListener('input', () => { setOffsetMin(Number(tl.range.value)); paintTimeline(); });
+  $('#timeline').addEventListener('click', (e) => {
+    const step = e.target.closest('[data-step]')?.dataset.step;
+    if (step) setOffsetMin(clockOffsetMin() + Number(step));
+    if (e.target.closest('#tlNow')) {
+      viewer.clock.currentTime = C.JulianDate.now();
+      viewer.clock.clockRange = C.ClockRange.UNBOUNDED;
+      viewer.clock.multiplier = 1;
+      viewer.clock.shouldAnimate = true;
+    }
+    if (e.target.closest('#tlShare')) shareView();
+  });
+  const paintDensity = () => get('/conjunctions/upcoming?hours=24&back=24&risk=CRITICAL,HIGH').then(({ items }) => {
+    if (viewer.isDestroyed()) return;
+    const bins = Array.from({ length: 192 }, () => ({ CRITICAL: 0, HIGH: 0 }));
+    const t0 = Date.now() - 24 * 3600000;
+    for (const e of items) {
+      const i = Math.floor((Date.parse(e.tca) - t0) / 900000);
+      if (i >= 0 && i < 192 && bins[i][e.risk] !== undefined) bins[i][e.risk] += 1;
+    }
+    const peak = Math.max(1, ...bins.map((b) => b.CRITICAL + b.HIGH));
+    $('#tlDensity').innerHTML = bins.map((b, i) => {
+      const n = b.CRITICAL + b.HIGH;
+      if (!n) return '';
+      const hgt = 2 + 8 * Math.sqrt(n / peak);
+      return `<rect x="${i}" y="${(10 - hgt).toFixed(2)}" width="0.8" height="${hgt.toFixed(2)}" fill="${b.CRITICAL ? RISK_COLORS.CRITICAL : RISK_COLORS.HIGH}"/>`;
+    }).join('');
+    $('#tlDensity').setAttribute('data-count', String(items.length));
+  }).catch(() => { /* the slider works without its strip */ });
+  paintDensity();
+  const densityTimer = setInterval(paintDensity, 600000);
+
+  // A link that opens this exact view: what is selected, the moment shown (when it is not live) and where the camera is.
+  async function shareView() {
+    const p = new URLSearchParams();
+    if (selected) p.set('norad', String(selected));
+    if (!isLive()) p.set('t', C.JulianDate.toDate(viewer.clock.currentTime).toISOString());
+    const c = viewer.camera.positionCartographic;
+    p.set('cam', [C.Math.toDegrees(c.longitude).toFixed(3), C.Math.toDegrees(c.latitude).toFixed(3), Math.round(c.height),
+      C.Math.toDegrees(viewer.camera.heading).toFixed(1), C.Math.toDegrees(viewer.camera.pitch).toFixed(1)].join(','));
+    const url = `${location.origin}${location.pathname}#/globe?${p}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Link to this view copied');
+    } catch {
+      window.prompt('Copy this link to share the view', url);
+    }
+  }
+
   // ---- replays: close approaches (real or synthetic) and simulated burns ---------------
   const page = root.querySelector('.globe-page');
   function hideOthers(on) {
@@ -411,6 +568,7 @@ export async function render(root, { app }) {
       markerEntities.forEach((en) => { en.show = false; });
       synEntities.forEach((en) => { en.show = false; });
       stationEntities.forEach((en) => { en.show = false; });
+      shellEntities.forEach((en) => { en.show = false; });
       hover.classList.add('hidden');
     } else if (replay.saved) {
       replay.saved = null;
@@ -418,6 +576,7 @@ export async function render(root, { app }) {
       showMarkers();
       synEntities.forEach((en) => { en.show = $('[data-layer="demo"]').checked; });
       stationEntities.forEach((en) => { en.show = $('[data-layer="stations"]').checked; });
+      shellEntities.forEach((en) => { en.show = $('[data-layer="shells"]').checked; });
     }
   }
   function clearReplay() {
@@ -528,14 +687,31 @@ export async function render(root, { app }) {
     }
   }
 
+  // A shared link may carry the moment (t) and the camera (cam=lon,lat,height,heading,pitch).
+  if (q.t) {
+    const when = new Date(q.t);
+    if (!Number.isNaN(when.getTime())) { viewer.clock.currentTime = C.JulianDate.fromDate(when); viewer.clock.multiplier = 1; viewer.clock.shouldAnimate = false; }
+  }
+  if (q.cam) {
+    const [lon, lat, height, heading = 0, pitch = -90] = q.cam.split(',').map(Number);
+    if ([lon, lat, height, heading, pitch].every(Number.isFinite) && Math.abs(lon) <= 180 && Math.abs(lat) <= 90 && height > 150000 && height < 5e8) {
+      viewer.camera.setView({ destination: C.Cartesian3.fromDegrees(lon, lat, height),
+        orientation: { heading: C.Math.toRadians(heading), pitch: C.Math.toRadians(pitch), roll: 0 } });
+    }
+  }
   if (q.assessment) replaySimulation(Number(q.assessment));
   else if (q.event) replayEvent(Number(q.event));
   else if (q.demo_event) replayEvent(Number(q.demo_event), true);
-  else if (q.norad) setTimeout(() => select(Number(q.norad), true), 1200);
+  else if (q.norad) setTimeout(() => select(Number(q.norad), !q.cam), 1200);
 
   return () => {
     clearInterval(timer);
     clearInterval(synTimer);
+    clearInterval(tlTimer);
+    clearInterval(resampleTimer);
+    clearInterval(densityTimer);
+    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointercancel', endDrag);
     clearReplay();
     removeLock();
     handler.destroy();

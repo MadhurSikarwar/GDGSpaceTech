@@ -100,7 +100,7 @@ export function openPalette() {
         <input type="text" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" autocomplete="off" spellcheck="false"
           placeholder="Search objects, pages and terms" aria-label="Search objects, pages and terms"><kbd>Esc</kbd></div>
       <div class="pal-list" id="palList" role="listbox"></div>
-      <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span class="r">Ctrl K or / anywhere</span></div>
+      <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span class="r">Ctrl K or / anywhere · ? for all shortcuts</span></div>
     </div>`;
   root = el;
   document.body.appendChild(el);

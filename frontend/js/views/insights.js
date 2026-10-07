@@ -181,7 +181,7 @@ function fillPipeline(root, data) {
   ];
   root.querySelector('#pipe').innerHTML = `<div class="lp-flow" aria-hidden="true"><svg viewBox="0 0 1000 40" preserveAspectRatio="none">
       <path d="M0 20 H1000"/><path class="pulse" d="M0 20 H1000"/></svg></div>
-    <div class="lp-pipe">${stages.map(([no, hd, p, list, kpi]) => `<div class="lp-stage"><span class="no">${no}</span><h4>${hd}</h4>
+    <div class="lp-pipe">${stages.map(([no, hd, p, list, kpi]) => `<div class="lp-stage"><span class="no">${no}</span><h3>${hd}</h3>
       <p>${p}</p><ul>${list.map((l) => `<li>${l}</li>`).join('')}</ul><div class="kpi">${kpi}</div></div>`).join('')}</div>`;
 }
 

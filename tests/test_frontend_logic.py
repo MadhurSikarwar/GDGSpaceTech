@@ -137,3 +137,39 @@ def test_fl11_the_orbit_diagram_is_to_scale_with_the_earth_at_the_focus():
     assert out["iss"]["earth"] / out["iss"]["A"] == pytest.approx(6378.137 / (6378.137 + 420.5), rel=1e-6)
     assert out["geo"]["earth"] / out["geo"]["A"] == pytest.approx(6378.137 / (6378.137 + 35786), rel=1e-4)
     assert out["heo"]["shift"] > 50 and out["heo"]["A"] > out["heo"]["B"]       # the focus sits towards perigee in an eccentric orbit
+
+
+def test_fl12_altitude_bar_is_a_log_scale_with_the_regime_ticks_in_order():
+    out = run("diagrams.js", """
+      const pos = (km) => +m.altPos(km).toFixed(3);
+      const bar = m.altitudeBar(416, 425);
+      const ticks = [...bar.matchAll(/<b style="left:([0-9.]+)%"/g)].map((x) => Number(x[1]));
+      console.log(JSON.stringify({ floor: pos(10), bottom: pos(100), iss: pos(420), leo: pos(2000), geo: pos(35786), top: pos(600000), over: pos(9e9), nan: pos(null),
+        ticks, bar: bar.includes('class="altbar"'), width: bar.match(/width:([0-9.]+)%/)[1] }));""")
+    assert out["floor"] == out["bottom"] == 0 and out["top"] == out["over"] == 1 and out["nan"] == 0
+    assert out["iss"] < out["leo"] < out["geo"] < 1 and out["ticks"] == [round(out["leo"] * 100, 1), round(out["geo"] * 100, 1)]
+    assert out["bar"] and float(out["width"]) < 1.0                  # nine kilometres of altitude difference is a sliver
+
+
+def test_fl13_encounter_preview_numbers_come_from_the_form_and_the_orbit():
+    out = run("diagrams.js", """
+      const svg = m.encounterSvg({ missKm: 0.25, crossingDeg: 70, leadH: 6, periodMin: 92.9, altKm: 420 });
+      const texts = [...svg.matchAll(new RegExp('>([^<>]+)</text>', 'g'))].map((x) => x[1]);
+      console.log(JSON.stringify({ v: +m.circularSpeed(420).toFixed(2), closing: +m.closingSpeed(7.66, 70).toFixed(2), head: +m.closingSpeed(7.66, 180).toFixed(2),
+        ticks: (svg.match(/<line x1=/g) || []).length, texts,
+        fallback: m.encounterSvg({ missKm: NaN, crossingDeg: NaN, leadH: NaN }).includes('70°') }));""")
+    assert out["v"] == 7.66 and out["closing"] == 8.79 and out["head"] == 15.32       # 2 v sin(angle / 2): two equal speeds meeting
+    assert out["ticks"] == 7                                                           # 6 h of 46.45-minute half-orbits
+    assert "MISS 0.25 KM" in out["texts"] and "70°" in out["texts"] and any("7 HALF-ORBITS" in t for t in out["texts"])
+    assert out["fallback"]                                                             # an empty box means the default angle
+
+
+# ----------------------------------------------------------------------------- shortcuts.js
+def test_fl14_the_second_key_of_a_shortcut_has_to_be_known_and_come_soon():
+    out = run("shortcuts.js", """
+      const t = 1000000;
+      console.log(JSON.stringify({ d: m.destination('d', t, t + 200), upper: m.destination('D', t, t + 200), late: m.destination('d', t, t + 1500),
+        none: m.destination('d', 0, t), unknown: m.destination('z', t, t + 100), keys: Object.keys(m.GO) }));""")
+    assert out["d"][0] == "#/dashboard" and out["upper"][0] == "#/dashboard"
+    assert out["late"] is None and out["none"] is None and out["unknown"] is None      # too slow, no first key, not a shortcut
+    assert out["keys"] == ["h", "g", "d", "c", "a", "l", "i"]

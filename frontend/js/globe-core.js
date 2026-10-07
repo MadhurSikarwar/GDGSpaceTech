@@ -407,7 +407,7 @@ export async function sampledOrbit(C, norad, time, periods = 2) {
     const [x, y, z] = o.ecef_km[i];
     prop.addSample(C.JulianDate.addSeconds(start, s, new C.JulianDate()), new C.Cartesian3(x * 1000, y * 1000, z * 1000));
   });
-  return { prop, start, periodS: o.period_min * 60, teme: o.teme_km || null,
+  return { prop, start, periodS: o.period_min * 60, teme: o.teme_km || null, ecefKm: o.ecef_km,
     end: C.JulianDate.addSeconds(start, o.offsets_s[o.offsets_s.length - 1], new C.JulianDate()) };
 }
 

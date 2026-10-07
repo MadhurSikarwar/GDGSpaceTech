@@ -55,12 +55,23 @@ export const loading = (msg = 'Loading…') => `<div class="loading">${esc(msg)}
 export const empty = (title, body = '') => `<div class="empty"><strong>${esc(title)}</strong>${esc(body)}</div>`;
 export const errorBox = (err) => `<div class="error-box">${esc(err?.message || err)}</div>`;
 
-export function table(columns, rows, { onRow, rowClass } = {}) {
-  const head = columns.map((c) => `<th class="${c.num ? 'num' : ''}">${esc(c.label)}</th>`).join('');
+// A column with `sort` is a button in the header that calls onSort(key); the column that is sorted on (`sort` option) is marked.
+export function table(columns, rows, { onRow, rowClass, sort, onSort } = {}) {
+  const head = columns.map((c) => {
+    if (!c.sort) return `<th class="${c.num ? 'num' : ''}">${c.label === '' ? '<span class="sr-only">Actions</span>' : esc(c.label)}</th>`;
+    const on = sort === c.sort;
+    return `<th class="${c.num ? 'num ' : ''}sortable${on ? ' sorted' : ''}" aria-sort="${on ? (c.sortDir || 'ascending') : 'none'}"><button type="button" data-sort="${esc(c.sort)}">${esc(c.label)}<i aria-hidden="true"></i></button></th>`;
+  }).join('');
   const body = rows.map((r, i) => `<tr data-i="${i}" class="${onRow ? 'clickable' : ''} ${rowClass ? rowClass(r) : ''}">${
     columns.map((c) => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.render ? c.render(r) : esc(r[c.key] ?? '—')}</td>`).join('')
   }</tr>`).join('');
   const el = h(`<div class="table-wrap"><table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`);
+  if (onSort) {
+    el.querySelector('thead').addEventListener('click', (e) => {
+      const key = e.target.closest('[data-sort]')?.dataset.sort;
+      if (key) onSort(key);
+    });
+  }
   if (onRow) {
     el.querySelector('tbody').addEventListener('click', (e) => {
       if (e.target.closest('a, button, input, select')) return;

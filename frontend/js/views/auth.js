@@ -1,6 +1,8 @@
 // Log in, create an account, forgot password, reset password.
-import { post } from '../api.js';
-import { esc, h, hashQuery, toast } from '../ui.js';
+import { get, post } from '../api.js';
+import { orbitScene } from '../diagrams.js';
+import { countdown } from '../hud.js';
+import { esc, fmt, h, hashQuery, toast } from '../ui.js';
 
 const COPY = {
   login: ['Log in', 'Follow satellites and get alerted about their close approaches.', 'Log in'],
@@ -31,7 +33,7 @@ export async function render(root, { mode, app }) {
     forgot: '<a href="#/login">Back to log in</a>',
     reset: '<a href="#/login">Back to log in</a>',
   }[mode];
-  root.appendChild(h(`<div class="auth-wrap"><div class="card auth-card bezel">
+  root.appendChild(h(`<div class="auth-wrap"><div class="auth-split"><div class="card auth-card bezel">
     <div class="eyebrow">OrbitWatch</div>
     <h1>${title}</h1>
     <p class="muted">${esc(lead)}</p>
@@ -40,9 +42,25 @@ export async function render(root, { mode, app }) {
       <div class="form-error" aria-live="polite"></div><div class="form-ok" aria-live="polite"></div>
       <button class="btn primary lg" type="submit">${submit}</button>
       <div class="links small">${links}</div>
-    </form></div></div>`));
+    </form></div>
+    <aside class="auth-scene" aria-hidden="true">${orbitScene()}<div class="scene-stats" id="sceneStats"></div></aside></div></div>`));
   const form = root.querySelector('form');
   form.querySelector('input').focus();
+  // The scene beside the form shows live numbers: what is tracked, what is ahead, and how long until the next close approach.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) root.querySelectorAll('animateMotion').forEach((a) => a.remove());
+  let nextAt = null;
+  const tick = setInterval(() => {
+    const el = root.querySelector('[data-tm]');
+    if (el && nextAt) el.textContent = countdown(nextAt - Date.now());
+  }, 1000);
+  Promise.all([get('/stats'), get(`/conjunctions?page_size=1&when=upcoming&from=${encodeURIComponent(new Date().toISOString())}`)]).then(([s, c]) => {
+    const e = c.items[0];
+    nextAt = e ? Date.parse(e.time_of_closest_approach.endsWith('Z') ? e.time_of_closest_approach : `${e.time_of_closest_approach}Z`) : null;
+    const box = root.querySelector('#sceneStats');
+    if (!box) return;
+    box.innerHTML = `<div><b>${fmt.int(s.counts.with_current_orbit)}</b><span>objects tracked</span></div><div><b>${fmt.int(c.total)}</b><span>close approaches ahead</span></div>`
+      + (e ? `<div><b data-tm>${countdown(nextAt - Date.now())}</b><span>to the next · ${esc(e.risk_level.toLowerCase())}</span></div>` : '');
+  }).catch(() => { /* the scene works without its numbers */ });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(form));
@@ -74,4 +92,5 @@ export async function render(root, { mode, app }) {
       btn.disabled = false;
     }
   });
+  return () => clearInterval(tick);
 }

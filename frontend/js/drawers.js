@@ -9,8 +9,11 @@ let openName = null;
 function setOpen(name, open) {
   const d = drawers[name];
   if (!d) return;
+  const was = d.el.classList.contains('open');
+  if (open && !was) d.returnTo = document.activeElement;           // where the keyboard goes back to when the drawer closes
   d.el.classList.toggle('open', open);
   d.el.setAttribute('aria-hidden', String(!open));
+  d.el.inert = !open;
   document.querySelectorAll(`[data-drawer="${name}"]`).forEach((b) => b.setAttribute('aria-expanded', String(open)));
   if (open) {
     for (const other of Object.keys(drawers)) if (other !== name) setOpen(other, false);
@@ -18,6 +21,12 @@ function setOpen(name, open) {
     d.onOpen?.();
     setTimeout(() => d.el.querySelector('input, button')?.focus({ preventScroll: true }), 60);
   } else if (openName === name) openName = null;
+  if (!open && was) {                                              // a closed drawer is inert: focus must not fall back to the top of the page
+    const back = d.returnTo;
+    d.returnTo = null;
+    const at = document.activeElement;
+    if (back?.isConnected && back !== document.body && (d.el.contains(at) || at === document.body)) back.focus({ preventScroll: true });
+  }
 }
 
 export function toggleDrawer(name, force) {

@@ -93,6 +93,16 @@ _memo = {}
 _memo_gates = {}
 _memo_lock = threading.Lock()
 _memo_generation = 0
+_MEMO_MAX = 300          # results kept at most: some keys come from the request (a search term, a date), so they must not pile up
+
+
+def _memo_prune():
+    """Drop what has expired and the locks of keys that hold no result. Call with _memo_lock held."""
+    now = time.monotonic()
+    for k in [k for k, h in _memo.items() if now - h[0] >= h[2]]:
+        del _memo[k]
+    for k in [k for k in _memo_gates if k not in _memo]:
+        del _memo_gates[k]
 
 
 def memo(key, build, factor=1.0):
@@ -110,6 +120,8 @@ def memo(key, build, factor=1.0):
     if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     with _memo_lock:
+        if len(_memo_gates) > 2 * _MEMO_MAX:
+            _memo_prune()
         gate = _memo_gates.setdefault(key, threading.Lock())
     with gate:
         hit = _memo.get(key)
@@ -118,7 +130,11 @@ def memo(key, build, factor=1.0):
         generation = _memo_generation
         value = build()
         if generation == _memo_generation:        # not if a write cleared the memo while this was being built
-            _memo[key] = (time.monotonic(), value)
+            with _memo_lock:
+                if len(_memo) >= _MEMO_MAX and key not in _memo:
+                    _memo_prune()
+                if len(_memo) < _MEMO_MAX or key in _memo:      # a full memo of fresh results keeps them: the newcomer is just not kept
+                    _memo[key] = (time.monotonic(), value, ttl)
         return value
 
 
