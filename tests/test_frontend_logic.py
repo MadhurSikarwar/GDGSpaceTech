@@ -173,3 +173,62 @@ def test_fl14_the_second_key_of_a_shortcut_has_to_be_known_and_come_soon():
     assert out["d"][0] == "#/dashboard" and out["upper"][0] == "#/dashboard"
     assert out["late"] is None and out["none"] is None and out["unknown"] is None      # too slow, no first key, not a shortcut
     assert out["keys"] == ["h", "g", "d", "c", "a", "l", "i"]
+
+
+# ----------------------------------------------------------------------------- plain.js
+def test_fl15_probabilities_and_spans_are_said_in_words():
+    out = run("plain.js", """
+      console.log(JSON.stringify({ a: m.oneIn(1.7e-6), b: m.oneIn(3e-9), c: m.oneIn(0.3), d: m.oneIn(2e-4), e: m.oneIn(1e-13), z: m.oneIn(0),
+        n: m.oneIn(null), big: m.oneIn(0.9), s: [m.span(1), m.span(51), m.span(84.6), m.span(300), m.span(4000), m.span(-30)] }));""")
+    assert out["a"] == "1 in 590,000" and out["b"] == "1 in 330 million" and out["c"] == "1 in 3.3" and out["d"] == "1 in 5,000"
+    assert out["e"] == "less than 1 in a trillion" and out["z"] == "practically zero" and out["n"] is None and out["big"] == "more likely than not"
+    assert out["s"] == ["1 minute", "51 minutes", "85 minutes", "5 hours", "2.8 days", "30 minutes"]
+
+
+NO_FEASIBLE = """{ decision: 'NO_FEASIBLE_MANEUVER', status: 'complete', risk_tier: 'HIGH', pc_before: 1.7e-6,
+  subject: { primary_name: 'IRS-P3', secondary_name: 'METEOR 1-5 DEB', time_of_closest_approach: '2026-10-07T11:36:49Z', miss_distance_km: 2.451 },
+  steps: [{ tool_name: 'generate_maneuver_candidates', payload: { candidates: [{ candidate_id: 'M1', lead_time_min: 51, direction: 'RADIAL IN', dv_mps: 0.012 }] } },
+          { tool_name: 'evaluate_maneuver_constraints', payload: { candidate_id: 'M1', feasible: false, violations: ['uplink_window_before_burn'] } }] }"""
+
+
+def test_fl16_a_case_with_no_feasible_burn_says_why_in_plain_words():
+    out = run("plain.js", f"""
+      const e = m.explain({NO_FEASIBLE}, Date.parse('2026-10-07T10:16:00Z'));
+      console.log(JSON.stringify(e));""")
+    assert out["tone"] == "warn" and out["title"] == "No workable way to avoid it"
+    assert out["summary"][0] == "IRS-P3 and METEOR 1-5 DEB will pass about 2.45 km from each other at 2026-10-07 17:06 IST (in about 81 minutes)."
+    assert "about 1 in 590,000" in out["summary"][1] and "rates the event HIGH risk" in out["summary"][1]
+    assert out["summary"][2] == "The planner tried one way to steer clear, but it cannot be carried out."
+    assert [f["key"] for f in out["facts"]] == ["pc", "miss", "tca"] and out["facts"][0]["detail"] == "1.7e-6"
+    assert len(out["options"]) == 1 and out["options"][0]["ok"] is False
+    assert out["options"][0]["line"] == ("M1: a burn 51 minutes before closest approach, pushing towards the Earth: cannot be carried out, "
+                                         "because no ground station can send the command to the satellite before the burn")
+    assert "operator" in out["next"]
+
+
+def test_fl17_other_answers_and_missing_data_never_break_the_explanation():
+    out = run("plain.js", """
+      const now = Date.parse('2026-10-07T10:16:00Z');
+      const rec = m.explain({ decision: 'MANEUVER_RECOMMENDED', status: 'complete', risk_tier: 'CRITICAL', pc_before: 1.9e-4,
+        maneuver: { dv_mps: 0.514, direction: 'POSIGRADE', lead_time_min: 47, miss_after_km: 5.02, pc_after: 2e-12 },
+        subject: { primary_name: 'ISS (ZARYA)', secondary_name: 'DEBRIS', time_of_closest_approach: '2026-10-07T02:22:00Z', miss_distance_km: 0.2 } }, now);
+      const mon = m.explain({ decision: 'MONITOR', status: 'complete', risk_tier: 'LOW', pc_before: 1e-9, subject: {} }, now);
+      const gone = m.explain({ decision: 'DATA_UNAVAILABLE', status: 'complete', subject: {} }, now);
+      const failed = m.explain({ status: 'failed' }, now);
+      const bare = m.explain({}, now);
+      console.log(JSON.stringify({ rec, mon: [mon.tone, mon.summary, mon.facts.length], gone: [gone.tone, gone.title], failed: [failed.tone, failed.title], bare: [bare.tone, bare.title, bare.summary, bare.options] }));""")
+    assert out["rec"]["tone"] == "act" and "passed about 0.2 km" in out["rec"]["summary"][0] and "7.9 hours ago" in out["rec"]["summary"][0]
+    assert "0.514 m/s, pushing forward along its path (speeds it up), about 47 minutes before closest approach" in out["rec"]["summary"][2]
+    assert "about 1 in 500 billion" in out["rec"]["summary"][2] and "about 5 km" in out["rec"]["summary"][2]
+    assert out["mon"] == ["ok", ["The chance that they actually collide is about 1 in 1 billion; OrbitWatch rates the event LOW risk.", "The risk is low enough that no burn is needed."], 1]
+    assert out["gone"] == ["na", "Not enough information to advise"] and out["failed"] == ["na", "The assessment did not finish"]
+    assert out["bare"] == ["na", "No recommendation yet", [], []]
+
+
+def test_fl18_every_check_the_planner_can_fail_has_a_plain_reason():
+    import re
+    src = (Path(__file__).resolve().parent.parent / "orbitwatch" / "agent" / "tools.py").read_text(encoding="utf-8")
+    block = src[src.index("checks = {"):src.index("violations = [")]
+    names = set(re.findall(r'"(\w+)":', block)) | set(re.findall(r'checks\["(\w+)"\]', src))
+    assert len(names) >= 7                                                    # the six fixed checks and the reviewer's minimum miss
+    assert names <= set(run("plain.js", "console.log(JSON.stringify(Object.keys(m.WHY_NOT)));"))

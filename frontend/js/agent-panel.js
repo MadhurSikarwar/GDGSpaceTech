@@ -4,6 +4,7 @@
 import { get, post } from './api.js';
 import { term } from './drawers.js';
 import { esc, fmt, h, modal, riskBadge, simTag, synTag, toast } from './ui.js';
+import { explain } from './plain.js';
 
 const DECISION_LABEL = {
   MANEUVER_RECOMMENDED: 'Manoeuvre recommended', MONITOR: 'Monitor — no manoeuvre',
@@ -18,7 +19,8 @@ export async function agentPanel(container, subject, app, { assessmentId } = {})
   const base = synthetic ? `/demo/events/${s.demoEventId}` : `/conjunctions/${s.eventId}`;
   const el = h(`<section class="card agent bezel">
     <div class="card-head"><div><h2>AI decision support ${synthetic ? synTag() : ''}</h2>
-      <div class="sub">An LLM agent chooses deterministic tools (SGP4, Foster ${term('pc', 'Pc')}, ${term('cw', 'Clohessy–Wiltshire')} optimiser, ground stations), reads the results and recommends what to do. Guardrails reject anything the physics does not support; every burn needs ${term('approval', 'human approval')}.</div></div>
+      <div class="sub">An AI agent looks at this close approach, runs the physics checks and recommends what to do. A person always has to approve a burn.</div>
+      <details class="how"><summary>How it works</summary><p class="small muted" style="margin:8px 0 0">An LLM agent chooses deterministic tools (SGP4, Foster ${term('pc', 'Pc')}, ${term('cw', 'Clohessy–Wiltshire')} optimiser, ground stations), reads the results and recommends what to do. Guardrails reject anything the physics does not support; every burn needs ${term('approval', 'human approval')}.</p></details></div>
       <div class="row"><select id="agHistory" class="hidden" aria-label="Earlier assessments" style="width:auto;height:28px"></select>
         <span class="tag plain" id="agEngine">—</span><button class="btn primary sm" id="agRun">Run AI assessment</button></div></div>
     <div id="agBody"><div class="muted small mono">No assessment yet for this event.</div></div></section>`);
@@ -130,15 +132,26 @@ function render(body, a, app) {
       <strong>Re-plan after a rejection</strong> of assessment #${a.parent_assessment_id || '—'}${a.feedback ? `: “${esc(a.feedback)}”` : ''}${a.min_miss_km ? ` · required miss ≥ ${fmt.num(a.min_miss_km, 2)} km` : ''}</div></div>` : '';
   const syn = a.synthetic ? `<div class="banner syn"><svg class="icon"><use href="#i-flask"/></svg><div><strong>Synthetic demo event.</strong>
       The other object is injected synthetic debris, not a real catalogue object. Everything else (SGP4, Pc, optimiser, guardrails) is the real pipeline.</div></div>` : '';
-  const decision = a.status === 'running' ? '' : `<div class="agent-decision ${a.decision === 'MANEUVER_RECOMMENDED' ? 'act' : ''}">
-      <div class="spread"><div><div class="k">Recommendation · assessment #${a.assessment_id}</div><div class="d">${esc(DECISION_LABEL[a.decision] || a.status)}</div></div>
+  // The answer is given twice: in plain words first (built from the assessment's own figures, see plain.js), then the
+  // agent's original technical wording and the exact numbers underneath, unchanged.
+  const plain = a.status === 'running' ? null : explain(a);
+  const factTile = (f) => `<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd><dd class="tech">${term(f.key, f.term)}${f.detail ? ` ${esc(f.detail)}` : ''}</dd></div>`;
+  const optionRow = (o) => `<li class="${o.ok === false ? 'no' : o.ok ? 'yes' : ''}"><i aria-hidden="true">${o.ok === false ? '✗' : o.ok ? '✓' : '·'}</i><span>${esc(o.line)}</span></li>`;
+  const decision = !plain ? '' : `<div class="agent-verdict tone-${plain.tone}">
+      <div class="av-top"><div><div class="k">Recommendation · assessment #${a.assessment_id} · ${esc(DECISION_LABEL[a.decision] || a.status)}</div>
+          <h3 class="av-title">${esc(plain.title)}</h3></div>
         <div class="row">${a.risk_tier ? riskBadge(a.risk_tier) : ''}${a.human_approval_required ? '<span class="tag accent">Human approval required</span>' : ''}</div></div>
+      ${plain.summary.length ? `<div class="av-plain"><div class="av-lab">In plain words</div>${plain.summary.map((s) => `<p>${esc(s)}</p>`).join('')}</div>` : ''}
+      ${plain.facts.length ? `<dl class="av-facts">${plain.facts.map(factTile).join('')}</dl>` : ''}
+      ${plain.options.length ? `<div class="av-opts"><div class="av-lab">What the planner tried</div><ul>${plain.options.map(optionRow).join('')}</ul></div>` : ''}
+      ${plain.next ? `<div class="av-next"><div class="av-lab">What happens next</div><p>${esc(plain.next)}</p></div>` : ''}</div>
+    <div class="agent-tech">
+      <div class="av-lab">Technical wording · as returned by the AI</div>
+      <p class="tech-text">${esc(a.explanation || 'The agent returned no text.')}</p>
       ${m ? `<dl class="agent-metrics">
         <div><dt>${term('dv', 'Δv')}</dt><dd>${fmt.num(m.dv_mps, 3)} m/s</dd></div><div><dt>Direction</dt><dd>${esc(m.direction)}</dd></div>
         <div><dt>Burn</dt><dd>${esc(fmt.dt(m.burn_time_utc || ''))}</dd></div><div><dt>Lead</dt><dd>T−${fmt.num(m.lead_time_min, 0)} min</dd></div>
-        <div><dt>${term('pc', 'Pc')}</dt><dd>${pc(a.pc_before)} → ${pc(a.pc_after)}</dd></div><div><dt>${term('miss', 'Miss after')}</dt><dd>${m.miss_after_km == null ? '—' : `${fmt.num(m.miss_after_km, 2)} km`}</dd></div></dl>`
-        : (a.pc_before != null ? `<dl class="agent-metrics"><div><dt>Pc</dt><dd>${pc(a.pc_before)}</dd></div></dl>` : '')}
-      <p>${esc(a.explanation || '')}</p>
+        <div><dt>${term('pc', 'Pc')}</dt><dd>${pc(a.pc_before)} → ${pc(a.pc_after)}</dd></div><div><dt>${term('miss', 'Miss after')}</dt><dd>${m.miss_after_km == null ? '—' : `${fmt.num(m.miss_after_km, 2)} km`}</dd></div></dl>` : ''}
       <div class="small mono muted">${esc(a.engine)} · ${fmt.dt(a.finished_at || a.started_at)}</div></div>`;
   const cands = gen ? `<div class="table-wrap"><table class="data agent-cands"><thead><tr><th>Candidate</th><th class="num">Δv m/s</th><th>Direction</th>
       <th class="num">Lead</th><th class="num">Pc after</th><th class="num">Miss after</th><th class="num">${term('drift', 'Drift')} km</th><th>Constraints</th></tr></thead><tbody>
@@ -152,7 +165,7 @@ function render(body, a, app) {
       }).join('')}</tbody></table></div>` : '';
   body.innerHTML = `${syn}${review}${decision}${decisionBox(a, app)}${cands}
     <div class="agent-trace-head mono small"><span>Agent trace</span><span>${steps.length} steps${a.status === 'running' ? ' · running…' : ''}</span></div>
-    <ol class="agent-trace">${steps.map((s) => `<li class="a-${s.actor}">
+    <ol class="agent-trace" tabindex="0" aria-label="Agent trace, one line per step">${steps.map((s) => `<li class="a-${s.actor}">
       <span class="n">${String(s.step_no).padStart(2, '0')}</span><span class="who">${s.actor}${s.tool_name ? ` · ${esc(s.tool_name)}` : ''}</span>
       <span class="what">${esc(s.summary)}</span></li>`).join('')}${a.status === 'running' ? '<li class="a-system pulse"><span class="n">··</span><span class="who">agent</span><span class="what">thinking…</span></li>' : ''}</ol>`;
 }
