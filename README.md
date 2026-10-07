@@ -398,7 +398,9 @@ database files.
    ow setup
    ow create-admin
    ```
-5. **Run:**
+5. **Run:** double-click **`start-website.bat`**. It checks that MySQL is running, starts the MongoDB cluster, starts
+   the website and the scheduler in its window and opens the browser; closing the window stops the website. The same
+   thing by hand:
    ```bash
    ow mongo-start
    ow service
