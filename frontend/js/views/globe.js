@@ -9,8 +9,9 @@
 import { get } from '../api.js';
 import { term } from '../drawers.js';
 import { EncounterReplay, glowCanvas } from '../encounter.js';
-import { ACCENT, CatalogCloud, createViewer, dayView, indiaSun, indiaView, INDIA, loadCesium, orbitRing, REGIMES, RISK_COLORS, sampledOrbit, sampledTrack,
+import { ACCENT, BASEMAPS, CatalogCloud, createViewer, dayView, indiaSun, indiaView, INDIA, installSmoothZoom, loadCesium, orbitRing, REGIMES, RISK_COLORS, sampledOrbit, sampledTrack,
   shapeCanvas, ringCanvas, SYN_COLOR, TYPE_COLORS, TYPE_NAMES } from '../globe-core.js';
+import { createGovernor } from '../perf.js';
 import { istDate, istHMS, utcHMS } from '../time.js';
 import { age, esc, fmt, hashQuery, objLink, prov, riskBadge, setHashQuery, simTag, synTag, toast, typeTag } from '../ui.js';
 
@@ -33,6 +34,10 @@ export async function render(root, { app }) {
         <label><input type="checkbox" data-layer="demo" checked><i style="background:${SYN_COLOR};border-radius:1px"></i>Synthetic demo objects<span class="count" id="synCount"></span></label>
         <label><input type="checkbox" data-layer="stations"><i style="background:#c9d4e2;border-radius:1px"></i>Ground stations</label>
         <label><input type="checkbox" data-layer="shells"><i style="background:transparent;border:1px dashed ${ACCENT};border-radius:50%"></i>Orbit shells (LEO, GNSS, GEO)</label></div></div>
+      <div class="sect"><h3><span>Map</span><span id="mapNow" class="count">Original</span></h3>
+        <div class="chips" id="baseMaps" role="group" aria-label="Base map">${BASEMAPS.map(([id, label]) => `<button class="chip" data-map="${id}" aria-pressed="${id === 'original'}" title="${{ original: 'The globe as it always looked: satellite imagery by day, city lights and the real day/night line', hd: 'High-resolution satellite imagery (Esri), sharper when zoomed in, needs an internet connection', streets: 'Street map (Esri), needs an internet connection', dark: 'Dark grey map (Esri), keeps the satellite points easy to see', natural: 'Natural Earth, bundled with the page, works offline' }[id]}">${label}</button>`).join('')}</div>
+        <div class="chips" id="mapMode" role="group" aria-label="Globe or flat map" style="margin-top:6px"><button class="chip" data-mode="3d" aria-pressed="true">3D globe</button><button class="chip" data-mode="2d" aria-pressed="false">2D map</button></div>
+        <button class="btn sm" id="mapReset" style="margin-top:8px" title="Original base map and the 3D globe">↺ Reset to original globe</button></div>
       <div class="sect globe-hot" id="hot"></div>
     </div>
     <div class="globe-panel globe-info hidden" id="info" aria-live="polite"></div>
@@ -57,6 +62,7 @@ export async function render(root, { app }) {
       <div class="grp"><button data-cam="india" title="Centred on India: day and night follow the IST clock">India</button><button data-cam="globe" title="Whole Earth, sunlit side">Sunlit</button><button data-cam="leo" title="Low Earth orbit">LEO</button>
         <button data-cam="geo" title="Geostationary belt">GEO belt</button><button data-cam="polar" title="Over the North Pole">Polar</button>
         <button data-cam="follow" id="followBtn" title="Follow the selected object">Follow</button></div>
+      <div class="grp zoom"><button data-zoom="in" title="Zoom in" aria-label="Zoom in">+</button><button data-zoom="out" title="Zoom out" aria-label="Zoom out">−</button></div>
       <span class="lbl">TIME</span>
       <div class="grp"><button data-time="live" title="Real time">Live</button><button data-time="10">×10</button><button data-time="60">×60</button>
         <button data-time="300">×300</button><button data-time="pause" title="Pause / resume">❚❚</button></div>
@@ -77,6 +83,16 @@ export async function render(root, { app }) {
 
   const viewer = createViewer(C, $('#cesium'), { interactive: true, creditContainer: root.querySelector('#credits') });
   viewer.camera.setView({ destination: indiaView(C, 24_000_000) });
+  const zoom = installSmoothZoom(C, viewer);
+  const NAMES = Object.fromEntries(BASEMAPS);
+  // Full resolution while it keeps up; if frames are consistently slow, step the render resolution down.
+  const governor = createGovernor({ slowMs: 28, onStep: (level) => viewer.setQuality(level) });
+  let prevFrame = performance.now();
+  const stopGovernor = viewer.scene.postRender.addEventListener(() => {
+    const now = performance.now();
+    governor.frame(now - prevFrame);
+    prevFrame = now;
+  });
   const accent = C.Color.fromCssColorString(ACCENT);
   const synColor = C.Color.fromCssColorString(SYN_COLOR);
   const bg = C.Color.fromCssColorString('#04070b').withAlpha(0.82);
@@ -453,6 +469,26 @@ export async function render(root, { app }) {
     }
   });
 
+  // ---- base map: Original (the globe as it was), Streets, Dark, Natural Earth; 3D globe or 2D map ------------------------
+  const paintMap = () => {
+    root.querySelectorAll('[data-map]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.map === viewer.baseMap)));
+    const flat = viewer.scene.mode !== C.SceneMode.SCENE3D;
+    root.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.mode === '2d') === flat)));
+    $('#mapNow').textContent = `${NAMES[viewer.baseMap]}${flat ? ' · 2D' : ''}`;
+    $('#mapReset').disabled = viewer.baseMap === 'original' && !flat;
+  };
+  $('#baseMaps').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-map]')?.dataset.map;
+    if (id) { viewer.setBaseMap(id); paintMap(); }
+  });
+  $('#mapMode').addEventListener('click', (e) => {
+    const mode = e.target.closest('[data-mode]')?.dataset.mode;
+    if (mode) { stopFollow(); viewer.setMapMode(mode); }
+  });
+  $('#mapReset').addEventListener('click', () => { viewer.setBaseMap('original'); viewer.setMapMode('3d'); paintMap(); });
+  const unMorph = [viewer.scene.morphComplete.addEventListener(paintMap)];
+  paintMap();
+
   // ---- camera and time ----------------------------------------------------------------
   const CAMS = {
     india: () => viewer.camera.flyTo({ destination: indiaView(C, 24_000_000), orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 }, duration: 1.6 }),
@@ -463,6 +499,8 @@ export async function render(root, { app }) {
     follow: () => follow(),
   };
   root.querySelector('.globe-toolbar').addEventListener('click', (e) => {
+    const z = e.target.closest('[data-zoom]')?.dataset.zoom;
+    if (z) { zoom.zoomBy(z === 'in' ? -0.5 : 0.5); return; }
     const cam = e.target.closest('[data-cam]')?.dataset.cam;
     if (cam) { if (cam !== 'follow') stopFollow(); CAMS[cam](); return; }
     const t = e.target.closest('[data-time]')?.dataset.time;
@@ -715,6 +753,9 @@ export async function render(root, { app }) {
     clearReplay();
     removeLock();
     handler.destroy();
+    stopGovernor();
+    unMorph.forEach((off) => off());
+    zoom.destroy();
     cloud.destroy();
     viewer.destroy();
   };

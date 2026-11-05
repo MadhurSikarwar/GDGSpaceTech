@@ -56,7 +56,7 @@ export function createViewer(C, container, { interactive = true, creditContainer
   const viewer = new C.Viewer(container, {
     baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
     navigationHelpButton: false, fullscreenButton: false, infoBox: false, selectionIndicator: false,
-    animation: false, timeline: false, shouldAnimate: true, scene3DOnly: true, requestRenderMode: false,
+    animation: false, timeline: false, shouldAnimate: true, scene3DOnly: !(interactive && !light), requestRenderMode: false,
     // `light` is for a decorative globe behind text: FXAA only (4x MSAA is the costliest thing on a weak GPU)
     msaaSamples: light ? 1 : 4, creditContainer: creditContainer || undefined,
   });
@@ -66,10 +66,11 @@ export function createViewer(C, container, { interactive = true, creditContainer
     C.TileMapServiceImageryProvider.fromUrl(C.buildModuleUrl('Assets/Textures/NaturalEarthII')));
   Object.assign(fallback, { brightness: 0.85, contrast: 1.05, saturation: 0.75 });
   viewer.imageryLayers.add(fallback);
+  let day; let night;
   try {
-    const day = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'BlueMarble_ShadedRelief_Bathymetry', '2004-08-01', 'jpeg'));
+    day = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'BlueMarble_ShadedRelief_Bathymetry', '2004-08-01', 'jpeg'));
     Object.assign(day, { brightness: 1.12, contrast: 1.1, saturation: 1.12, gamma: 1.0, dayAlpha: 1.0, nightAlpha: 0.0 });
-    const night = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'VIIRS_Black_Marble', '2016-01-01', 'png'));
+    night = viewer.imageryLayers.addImageryProvider(gibsLayer(C, 'VIIRS_Black_Marble', '2016-01-01', 'png'));
     Object.assign(night, { dayAlpha: 0.0, nightAlpha: 1.0, brightness: 1.5, contrast: 1.1, saturation: 0.75 });
     // if NASA GIBS is unreachable its tiles never arrive and the Natural Earth fallback underneath shows
   } catch { /* GIBS unavailable: fallback imagery only */ }
@@ -100,8 +101,121 @@ export function createViewer(C, container, { interactive = true, creditContainer
   if (!interactive) {
     scene.screenSpaceCameraController.enableInputs = false;
     viewer.canvas.style.pointerEvents = 'none';
+  } else if (!light) {
+    sharpen(C, viewer);
+    installBaseMaps(C, viewer, { fallback, day, night });
   }
   return viewer;
+}
+
+// Base maps for the interactive globe. 'original' is the globe as it always looked (NASA Blue Marble by day, city
+// lights at night, real sun lighting); the others are alternatives, loaded only when chosen. HD satellite, Streets and
+// Dark are Esri's public tile services and need an internet connection (OpenStreetMap's and CARTO's tile servers
+// refuse requests without a key or a Referer, so they cannot be used from here); Natural Earth is bundled.
+export const BASEMAPS = [['original', 'Original'], ['hd', 'Satellite HD'], ['streets', 'Streets'], ['dark', 'Dark'], ['natural', 'Natural Earth']];
+const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services';
+const TILES = {
+  hd: { url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, credit: 'Imagery © Esri, Maxar, Earthstar Geographics and the GIS User Community', maximumLevel: 19 },
+  streets: { url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`, credit: 'Map © Esri, HERE, Garmin, OpenStreetMap contributors', maximumLevel: 19 },
+  dark: { url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, credit: 'Map © Esri, HERE, Garmin, OpenStreetMap contributors', maximumLevel: 16 },
+};
+export function installBaseMaps(C, viewer, { fallback, day, night }) {
+  const { scene } = viewer;
+  const extra = {};
+  viewer.baseMap = 'original';
+  viewer.setBaseMap = (id) => {
+    if (TILES[id] && !extra[id]) extra[id] = viewer.imageryLayers.addImageryProvider(new C.UrlTemplateImageryProvider(TILES[id]), 1);
+    viewer.baseMap = id;
+    fallback.show = true;                                   // always underneath: shows while other tiles load
+    if (day) day.show = id === 'original';
+    if (night) night.show = id === 'original';
+    Object.entries(extra).forEach(([k, layer]) => { layer.show = k === id; });
+    // the sun-lit day/night globe belongs to the original look; flat maps stay evenly lit so they can be read
+    scene.globe.enableLighting = id === 'original';
+    scene.globe.showGroundAtmosphere = id === 'original' || id === 'natural' || id === 'hd';
+  };
+  // '3d' globe, or '2d' flat map. The point cloud, orbits and markers are drawn in either.
+  viewer.setMapMode = (mode) => {
+    if (mode === '2d' && scene.mode !== C.SceneMode.SCENE2D) scene.morphTo2D(1);
+    if (mode === '3d' && scene.mode !== C.SceneMode.SCENE3D) scene.morphTo3D(1);
+  };
+}
+
+// Render the interactive globe at full resolution. CesiumJS draws in CSS pixels by default
+// (useBrowserRecommendedResolution = true), which looks soft on a high-density screen; this draws in device pixels,
+// and on an ordinary 1x screen supersamples by 1.5 (anti-aliasing at a higher resolution, then scaled down). The
+// total is capped at 2x so a phone with a 3x screen does not draw nine times the pixels. The globe page lowers it
+// again through setQuality() if frames come out slow.
+export const QUALITY = [1, 0.8, 0.65];
+export function sharpen(C, viewer) {
+  const { scene } = viewer;
+  const dpr = window.devicePixelRatio || 1;
+  viewer.useBrowserRecommendedResolution = false;
+  viewer.baseScale = dpr >= 2 ? Math.min(1, 2 / dpr) : Math.min(1.5 / dpr, 2 / dpr);
+  viewer.resolutionScale = viewer.baseScale;
+  scene.globe.maximumScreenSpaceError = 1;                 // refine terrain and imagery tiles sooner (default 2)
+  viewer.setQuality = (level) => { viewer.resolutionScale = viewer.baseScale * QUALITY[Math.min(level, QUALITY.length - 1)]; };
+}
+
+// Smooth zoom. CesiumJS zooms in fixed steps per wheel notch, which jumps. This replaces the wheel with an eased
+// exponential zoom: the wheel (or the zoom buttons) moves a target distance, and each frame the camera closes a
+// fraction of the gap, so a long scroll glides and a single notch is a small, even step at any altitude.
+// Right-drag and pinch keep Cesium's own zoom. Distances are metres from the surface point under the view centre.
+export function installSmoothZoom(C, viewer, { min = 3000, max = 3.0e8, halfLifeS = 0.09, perPixel = 0.0014 } = {}) {
+  const { scene, camera, canvas } = viewer;
+  const ctl = scene.screenSpaceCameraController;
+  ctl.zoomEventTypes = [C.CameraEventType.RIGHT_DRAG, C.CameraEventType.PINCH];
+  ctl.minimumZoomDistance = min;
+  ctl.maximumZoomDistance = max;
+  const scratch = new C.Cartesian3();
+  // How far the camera is from what it looks at: from the centre of the globe's surface under the view, or from
+  // the tracked target when the camera is locked to an object.
+  const flat = () => scene.mode !== C.SceneMode.SCENE3D;
+  const distance = () => {
+    if (flat()) return Math.max(camera.positionCartographic.height, 1);
+    if (!C.Matrix4.equals(camera.transform, C.Matrix4.IDENTITY)) return C.Cartesian3.magnitude(camera.position);
+    const ray = new C.Ray(camera.positionWC, camera.directionWC);
+    const hit = C.IntersectionTests.rayEllipsoid(ray, C.Ellipsoid.WGS84);
+    if (hit) return Math.max(hit.start, 1);
+    return Math.max(camera.positionCartographic.height, 1);
+  };
+  let target = null;                                         // ln(distance) the camera is gliding to
+  const clampLog = (v) => Math.min(Math.log(max), Math.max(Math.log(min), v));
+  const zoomBy = (ln) => {                                   // ln > 0 zooms out, ln < 0 zooms in
+    if (viewer.trackedEntity === undefined) camera.cancelFlight();
+    target = clampLog((target ?? Math.log(distance())) + ln);
+  };
+  const onWheel = (e) => {
+    e.preventDefault();
+    const px = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+    zoomBy(Math.max(-300, Math.min(300, px)) * perPixel * (e.ctrlKey ? 2.5 : 1));   // ctrl: a pinch on a trackpad
+  };
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+  let last = performance.now();
+  const step = scene.preRender.addEventListener(() => {
+    const now = performance.now();
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (target === null) return;
+    const cur = Math.log(distance());
+    const gap = target - cur;
+    if (Math.abs(gap) < 0.0005) { target = null; return; }
+    const next = cur + gap * (1 - 2 ** (-dt / halfLifeS));
+    const move = Math.exp(cur) - Math.exp(next);             // metres towards the target (negative: away)
+    if (move > 0) camera.zoomIn(move); else camera.zoomOut(-move);
+  });
+  // A drag, a flight or a tracked-object change takes over: forget the old target so it does not tug back later.
+  const stop = () => { target = null; };
+  const down = () => stop();
+  canvas.addEventListener('pointerdown', down);
+  return {
+    zoomBy,
+    destroy() {
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('pointerdown', down);
+      step();
+    },
+  };
 }
 
 // Where the Sun is overhead right now (low-precision solar position, ~0.1 degree): used to open the globe

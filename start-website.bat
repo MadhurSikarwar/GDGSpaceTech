@@ -8,6 +8,8 @@ rem    4. opens https://localhost:8443/ in your browser once the site answers
 rem  Close this window or press Ctrl+C to stop the website. MongoDB keeps running;
 rem  stop it with:  ow mongo-stop
 rem  Optional: set ORBITWATCH_NO_BROWSER=1 to skip opening the browser.
+rem  Optional: set ORBITWATCH_STOP_MONGO=1 to stop the MongoDB cluster too when the website stops
+rem            (a fully cold start next time; MySQL is a Windows service and is left running).
 rem ---------------------------------------------------------------------------
 setlocal
 title OrbitWatch
@@ -24,21 +26,23 @@ if not exist "%ORBITWATCH_RUNTIME%\venv\Scripts\python.exe" (
 )
 
 rem --- already running? then only open it
-netstat -ano | findstr /R /C:":8443 .*LISTENING" >nul
+rem     (ports are tested by really connecting: netstat can report a port that works as something other than LISTENING)
+call :tcp 8443
 if not errorlevel 1 (
   echo [OrbitWatch] The website is already running at %URL%
+  echo              To restart it ^(for example after changing code^), close the window it runs in first.
   if not defined ORBITWATCH_NO_BROWSER start "" "%URL%"
   ping -n 4 127.0.0.1 >nul
   exit /b 0
 )
 
 rem --- MySQL: a Windows service that normally starts with Windows
-netstat -ano | findstr /R /C:":3306 .*LISTENING" >nul
+call :tcp 3306
 if errorlevel 1 (
-  echo [OrbitWatch] MySQL is not listening on port 3306, starting the service %MYSQL_SERVICE% ...
+  echo [OrbitWatch] MySQL is not answering on port 3306, starting the service %MYSQL_SERVICE% ...
   net start %MYSQL_SERVICE% >nul 2>&1
   ping -n 6 127.0.0.1 >nul
-  netstat -ano | findstr /R /C:":3306 .*LISTENING" >nul
+  call :tcp 3306
   if errorlevel 1 (
     echo [OrbitWatch] MySQL could not be started. Start it from services.msc, or run this file as administrator.
     pause
@@ -66,5 +70,16 @@ echo              Close this window or press Ctrl+C to stop the website.
 echo.
 call "%~dp0ow.cmd" service
 echo.
-echo [OrbitWatch] The website has stopped. MongoDB is still running ^(ow mongo-stop stops it^).
+if "%ORBITWATCH_STOP_MONGO%"=="1" (
+  echo [OrbitWatch] The website has stopped. Stopping the MongoDB cluster ...
+  call "%~dp0ow.cmd" mongo-stop >nul 2>&1
+) else (
+  echo [OrbitWatch] The website has stopped. MongoDB is still running ^(ow mongo-stop stops it^).
+)
 pause
+goto :eof
+
+rem --- :tcp PORT  ->  errorlevel 0 when something accepts a connection on 127.0.0.1:PORT, else 1
+:tcp
+powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient('127.0.0.1', %~1); $c.Close(); exit 0 } catch { exit 1 }"
+exit /b %errorlevel%

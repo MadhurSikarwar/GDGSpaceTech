@@ -45,6 +45,7 @@ const ROUTES = [
   { re: /^\/globe$/, view: 'globe', title: '3D globe', full: true },
   { re: /^\/demo$/, view: 'demo', title: 'Synthetic-debris demo lab' },
   { re: /^\/insights$/, view: 'insights', title: 'How it works' },
+  { re: /^\/database$/, view: 'database', title: 'Database' },
   { re: /^\/alerts$/, view: 'alerts', title: 'My alerts', role: 'viewer' },
   { re: /^\/account$/, view: 'account', title: 'Account', role: 'viewer' },
   { re: /^\/reports$/, view: 'reports', title: 'Reports', role: 'analyst' },
@@ -57,7 +58,7 @@ const ROUTES = [
 
 const NAV = [
   ['#/globe', 'Globe'], ['#/dashboard', 'Dashboard'], ['#/catalog', 'Catalogue'], ['#/conjunctions', 'Close approaches'],
-  ['#/demo', 'Demo lab'], ['#/alerts', 'My alerts', 'viewer'], ['#/reports', 'Reports', 'analyst'], ['#/admin', 'Admin', 'admin'],
+  ['#/demo', 'Demo lab'], ['#/database', 'Database'], ['#/alerts', 'My alerts', 'viewer'], ['#/reports', 'Reports', 'analyst'], ['#/admin', 'Admin', 'admin'],
 ];
 
 const icon = (id) => `<svg><use href="#i-${id}"/></svg>`;

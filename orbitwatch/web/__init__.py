@@ -35,11 +35,11 @@ def create_app(https=True):
         MAX_CONTENT_LENGTH=1_000_000,
     )
 
-    from orbitwatch.web import (admin_api, agent_api, auth_api, catalog_api, conjunctions_api, demo_api, landing_api,
-                                live_api, me_api, reports_api, visual_api)
+    from orbitwatch.web import (admin_api, agent_api, auth_api, catalog_api, conjunctions_api, database_api, demo_api,
+                                landing_api, live_api, me_api, reports_api, visual_api)
     from orbitwatch.web.common import memo_clear
     for bp in (auth_api.bp, catalog_api.bp, conjunctions_api.bp, me_api.bp, reports_api.bp, admin_api.bp,
-               visual_api.bp, landing_api.bp, agent_api.bp, live_api.bp, demo_api.bp):
+               visual_api.bp, landing_api.bp, agent_api.bp, live_api.bp, demo_api.bp, database_api.bp):
         app.register_blueprint(bp)
 
     @app.before_request

@@ -10,6 +10,7 @@ ORBITWATCH_TLS_CERT / ORBITWATCH_TLS_KEY point at a real one.
 import logging
 import os
 import signal
+import ssl
 import subprocess
 import sys
 import threading
@@ -139,6 +140,10 @@ def serve(host="127.0.0.1", port=None, http=False, redirect_port=None):
         if tls:
             from cheroot.ssl.builtin import BuiltinSSLAdapter
             srv.ssl_adapter = BuiltinSSLAdapter(*tls)
+            # With TLS 1.3 on Windows (OpenSSL 3.5) Chrome/Edge intermittently lose a large response (app.css,
+            # ~110 KB: ERR_TOO_MANY_RETRIES, server log "SSLError: [SYS] unknown error"), so the page loads unstyled.
+            # Measured against Chromium: TLS 1.3 failed 12 to 25 of 25 page loads, TLS 1.2 failed none.
+            srv.ssl_adapter.context.maximum_version = ssl.TLSVersion.TLSv1_2
         return srv
 
     tls = None
