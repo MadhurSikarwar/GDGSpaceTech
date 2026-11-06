@@ -5,7 +5,11 @@ linear in geomagnetic energy) drives the drag-activity scalar that inflates
 the in-track covariance growth used for Pc. On any failure a quiet-sun
 snapshot marked live=False is returned instead.
 """
+import json
 import logging
+import os
+import threading
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -59,3 +63,41 @@ def fetch():
         log.warning("NOAA space weather unavailable, using quiet-sun values: %s", exc)
         return {"observed_at": datetime.now(timezone.utc).replace(tzinfo=None), **QUIET,
                 "activity": "QUIET", "drag_scalar": 1.0, "source": "quiet-sun fallback", "live": False}
+
+
+# --------------------------------------------------------------------------- shared cache of the live reading
+# Used when no recent reading is stored in MySQL (the scheduler is not running): the public space-weather chip and the
+# decision agent then ask NOAA directly. Two NOAA requests can take up to 20 s when NOAA is slow or down, so the answer
+# is kept in a small file: every process (web server, scheduler, a second web worker) and a restart reuse it.
+CACHE_FILE = config.CACHE_DIR / "space_weather_live.json"
+LIVE_TTL_S = 600        # a live reading is reused for 10 minutes
+FALLBACK_TTL_S = 60     # NOAA unreachable: try again after a minute
+_cache_lock = threading.Lock()
+
+
+def _read_cache():
+    try:
+        d = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        d["observed_at"] = datetime.fromisoformat(d["observed_at"])
+        return d
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def cached_fetch():
+    """fetch(), at most once per TTL for every process together. Requests arriving meanwhile share the answer."""
+    with _cache_lock:
+        d = _read_cache()
+        if d is not None:
+            age = time.time() - float(d.pop("_fetched_at", 0))
+            if 0 <= age < (LIVE_TTL_S if d.get("live") else FALLBACK_TTL_S):
+                return d
+        value = fetch()
+        try:
+            tmp = CACHE_FILE.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({**value, "observed_at": value["observed_at"].isoformat(), "_fetched_at": time.time()}),
+                           encoding="utf-8")
+            os.replace(tmp, CACHE_FILE)          # atomic: another process never reads half a file
+        except OSError as exc:
+            log.warning("space weather cache not written: %s", exc)
+        return value

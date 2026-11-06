@@ -8,6 +8,13 @@ import { bothDateTime } from './time.js';
 
 const live = new Set();
 
+// Every chart's card gets a "Save image" button (handled once for the whole site in app.js).
+function offerSave(canvas) {
+  const head = canvas.closest('.card')?.querySelector('.card-head');
+  if (!head || head.querySelector('[data-save-image]')) return;
+  head.insertAdjacentHTML('beforeend', '<button type="button" class="btn sm ghost card-save" data-save-image title="Save this chart as a picture (PNG)">Save image</button>');
+}
+
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 // Categorical order (fixed, never cycled): validated reference palette.
@@ -63,6 +70,7 @@ export function barChart(canvas, { labels, series, horizontal = false, stacked =
     options: base(horizontal, stacked, xTitle, yTitle, series.length > 1),
   });
   live.add(chart);
+  offerSave(canvas);
   return chart;
 }
 
@@ -86,6 +94,7 @@ export function lineChart(canvas, { series, yTitle = '' }) {
     options: opts,
   });
   live.add(chart);
+  offerSave(canvas);
   return chart;
 }
 

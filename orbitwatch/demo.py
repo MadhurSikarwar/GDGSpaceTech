@@ -90,7 +90,12 @@ def create(target_norad, user_id, account, lead_min=DEFAULT_LEAD_MIN, miss_km=DE
     lead_min = float(min(max(lead_min, 60), 24 * 60))
     miss_km = float(min(max(miss_km, 0.02), 5.0))
     crossing = math.radians(float(min(max(crossing_deg, 10), 170)))
-    active = db.query_one(account, "SELECT COUNT(*) AS n FROM demo_scenario WHERE status = 'active'")["n"]
+    # Only scenarios whose encounter is still ahead (or under an hour past) count against the limit: a demo nobody
+    # cleared, e.g. one whose creator's account was deleted, must not block new ones for ever.
+    active = db.query_one(account, """
+        SELECT COUNT(*) AS n FROM demo_scenario s
+         WHERE s.status = 'active' AND EXISTS (SELECT 1 FROM demo_event e WHERE e.scenario_id = s.scenario_id
+                                                AND e.time_of_closest_approach > UTC_TIMESTAMP() - INTERVAL 1 HOUR)""")["n"]
     if active >= MAX_ACTIVE_SCENARIOS:
         raise DemoError(f"{active} demo scenarios are active; clear one first")
     target = db.query_one(account, f"""

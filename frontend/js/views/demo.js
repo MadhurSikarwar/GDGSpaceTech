@@ -91,7 +91,7 @@ export async function render(root, { app }) {
   const paintPreview = async () => {
     const mine = ++previewSeq;
     const orbit = await targetOrbit(Number(form.elements.target_norad.value));
-    if (mine !== previewSeq) return;
+    if (mine !== previewSeq || !$('#encPreview')) return;     // superseded, or the page was left meanwhile
     const num = (name) => (form.elements[name].value === '' ? NaN : Number(form.elements[name].value));        // an empty box means the default
     $('#encPreview').innerHTML = encounterSvg({ missKm: num('miss_km'), crossingDeg: num('crossing_deg'),
       leadH: num('lead_h'), periodMin: orbit?.period_min ?? null, altKm: orbit?.mean_altitude_km ?? null });

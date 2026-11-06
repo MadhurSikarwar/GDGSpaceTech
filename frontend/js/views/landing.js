@@ -39,7 +39,11 @@ export async function render(root, { app }) {
     cleanups.push(() => root.classList.remove('lp-intro'));
   }
 
-  const clock = () => { $('#kClock').textContent = bothClock(); };
+  const clockEl = $('#kClock');
+  const clock = () => { clockEl.textContent = bothClock(); };
+  // Left mid-load: #view (root) now holds another page, so this page's own element is no longer in the document.
+  const left = () => !clockEl.isConnected;
+  const stop = () => { timers.forEach(clearInterval); cleanups.forEach((f) => f()); };
   clock();
   timers.push(setInterval(clock, 1000));
 
@@ -61,9 +65,9 @@ export async function render(root, { app }) {
   } catch (err) {
     $('#hCount').textContent = '—';
     $('#hSrc').textContent = err.message;
-    return () => { timers.forEach(clearInterval); cleanups.forEach((f) => f()); };
+    return stop;
   }
-  if (!root.isConnected) return undefined;
+  if (left()) { stop(); return undefined; }
   fill(root, data, app);
 
   // A log of the real loading steps (each line turns on when that step finishes), once per browser session.
@@ -76,7 +80,7 @@ export async function render(root, { app }) {
   let cloud;
   try {
     const C = await loadCesium();
-    if (!root.isConnected) return undefined;
+    if (left()) { stop(); return undefined; }
     boot?.done('engine', `CesiumJS ${C.VERSION}`);
     viewer = createViewer(C, $('#lpGlobe'), { interactive: false, light: true, creditContainer: root.querySelector('#lpCredits') });
     // the Earth's imagery arrives tile by tile: the log is finished only when the picture is

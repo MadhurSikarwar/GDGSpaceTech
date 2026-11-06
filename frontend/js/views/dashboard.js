@@ -30,7 +30,7 @@ export async function render(root, { app }) {
       <div id="topEvents" style="margin-top:12px"></div></section>
     <section class="card c4" id="pHealth"><div class="card-head"><h2>System health</h2><span class="sub" id="hbAge"></span></div>
       <ul class="health" id="health">${loading()}</ul></section>
-    <section class="card c5 bezel" id="pRadar"><div class="card-head"><h2>Threat radar</h2><span class="sub" id="radarSub"></span></div>
+    <section class="card c5 bezel" id="pRadar"><div class="card-head"><h2>Threat radar</h2><span class="sub" id="radarSub"></span><button type="button" class="btn sm ghost card-save" data-save-image title="Save the radar as a picture (PNG)">Save image</button></div>
       <div class="radar" id="radar">${loading()}</div><div class="legend radar-legend" id="radarLegend"></div>
       <p class="radar-note">Clockwise from the top: time to closest approach · from the centre: miss distance</p></section>
     <section class="card c7 flush" id="pNext"><div class="card-head"><h2>Next close approaches</h2><span class="sub">live countdown, MEDIUM and above</span></div>
@@ -48,6 +48,7 @@ export async function render(root, { app }) {
   </div>`);
   root.appendChild(grid);
   const $ = (s) => root.querySelector(s);
+  const gone = () => !$('#hbAge');   // the visitor left: #view (root) now holds another page
 
   let stats;
   try {
@@ -56,6 +57,7 @@ export async function render(root, { app }) {
     strip.outerHTML = errorBox(err);
     return undefined;
   }
+  if (gone()) return undefined;
 
   // ---- catalogue and environment tiles --------------------------------------
   const cc = stats.counts;
@@ -214,6 +216,7 @@ export async function render(root, { app }) {
     $('#radarSub').textContent = `next ${spanH} hours · ${fmt.int(inSpan.length)} events`;
     $('#radar').innerHTML = inSpan.length ? `${radarSvg(inSpan, { now, spanH, maxKm })}<div class="rd-sweep" aria-hidden="true"></div>`
       : empty('No MEDIUM or higher close approaches in the next 72 hours');
+    $('#pRadar [data-save-image]').hidden = !inSpan.length;          // nothing drawn, nothing to save
     $('#radarLegend').innerHTML = ['CRITICAL', 'HIGH', 'MEDIUM'].map((r) => `<span>${riskBadge(r)} ${fmt.int(inSpan.filter((m) => m.risk === r).length)}</span>`).join('');
     const next = nextEvents(markers, now, 8);
     const el = $('#nextList');
@@ -235,6 +238,7 @@ export async function render(root, { app }) {
   // which used to cut the later events off every count and chart on this page).
   const loadMarkers = async () => {
     try { markers = (await get('/conjunctions/upcoming?hours=72')).items; } catch { markers = []; }
+    if (gone()) return;
     paintTimeline();
     paintRadar();
     paintSystem(app.system);
@@ -242,6 +246,7 @@ export async function render(root, { app }) {
 
   const loadTop = () => get('/conjunctions?risk=CRITICAL,HIGH&page_size=6').then(({ items }) => {
     const el = $('#topEvents');
+    if (!el) return;
     el.innerHTML = '';
     if (!items.length) return;
     el.appendChild(table([
@@ -251,11 +256,12 @@ export async function render(root, { app }) {
       { label: 'Pc', num: true, render: (r) => (r.probability_of_collision == null ? '—' : Number(r.probability_of_collision).toExponential(1)) },
       { label: 'Risk', render: (r) => riskBadge(r.risk_level) },
     ], items, { onRow: (r) => { location.hash = `#/conjunctions?event=${r.event_id}`; } }));
-  }).catch((err) => { $('#topEvents').innerHTML = errorBox(err); });
+  }).catch((err) => { const el = $('#topEvents'); if (el) el.innerHTML = errorBox(err); });
 
   const DEC = { APPROVED: '<span class="tag ok">approved · simulated</span>', REJECTED: '<span class="tag bad">rejected</span>' };
   const loadAssessments = () => get('/assessments?limit=8').then(({ items }) => {
     const el = $('#aiList');
+    if (!el) return;
     el.innerHTML = '';
     if (!items.length) { el.innerHTML = empty('No assessments yet', ' Open a close approach and run the AI decision support (Analyst role).'); return; }
     el.appendChild(table([
@@ -264,7 +270,7 @@ export async function render(root, { app }) {
       { label: 'Δv', num: true, render: (r) => (r.delta_v_mps == null ? '—' : `${fmt.num(r.delta_v_mps, 3)} m/s`) },
       { label: 'Decision', render: (r) => DEC[r.decision_status] || (r.decision === 'MANEUVER_RECOMMENDED' && r.status === 'complete' ? '<span class="tag warn">awaiting review</span>' : '<span class="muted small">—</span>') },
     ], items, { onRow: (r) => { location.hash = r.synthetic ? `#/demo?assessment=${r.assessment_id}` : `#/conjunctions?event=${r.event_id}`; }, rowClass: (r) => (r.synthetic ? 'syn' : '') }));
-  }).catch((err) => { $('#aiList').innerHTML = errorBox(err); });
+  }).catch((err) => { const el = $('#aiList'); if (el) el.innerHTML = errorBox(err); });
 
   const loadReentry = async () => {
     const el = $('#reentry');
@@ -291,6 +297,9 @@ export async function render(root, { app }) {
   const onSystem = (e) => paintSystem(e.detail);
   window.addEventListener('ow:system', onSystem);
   if (!app.system) { try { app.system = await get('/system/status'); } catch { /* the strip shows placeholders */ } }
+  // Left the page while the status loaded: the view now holds another page (root itself stays in the document),
+  // so stop here instead of painting into it and leaking the countdown and the listener.
+  if (gone()) { window.removeEventListener('ow:system', onSystem); clearInterval(tick); return undefined; }
   paintSystem(app.system);
   loadMarkers();
   loadTop();

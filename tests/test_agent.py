@@ -60,3 +60,35 @@ def test_guardrail_rejects_an_unevaluated_or_infeasible_choice(live_event, monke
                 assert agent.tools.evaluations[out["selected_candidate_id"]]["feasible"]
     finally:
         db.execute("admin", "DELETE FROM agent_assessment WHERE assessment_id = %s", (aid,))
+
+
+def test_missing_element_set_ends_as_data_unavailable_not_a_crash(monkeypatch):
+    """A tool that cannot compute (an object without a current element set) used to leave no risk tier behind,
+    and the run crashed with KeyError: 'risk'. It must finish as DATA_UNAVAILABLE and say why."""
+    from orbitwatch import db
+    from orbitwatch.agent import orchestrator
+    try:
+        orphan = db.query_one("admin", """SELECT so.norad_id FROM space_object so
+                                           LEFT JOIN current_orbit co ON co.norad_id = so.norad_id
+                                          WHERE co.norad_id IS NULL AND so.norad_id <> 25544 LIMIT 1""")
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no OrbitWatch database reachable: {exc}")
+    if not orphan:
+        pytest.skip("every object has a current element set")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    with db.mysql_conn("jobs") as conn:
+        cur = conn.cursor()
+        res = cur.callproc("sp_record_conjunction", (25544, orphan["norad_id"], "2032-02-02 02:02:02.000", 3.2, 9.1,
+                                                     None, 0, 0))
+        conn.commit()
+    event_id = res[6]
+    aid = None
+    try:
+        aid = orchestrator.start(event_id, None, "admin", background=False)
+        a = db.query_one("admin", "SELECT * FROM agent_assessment WHERE assessment_id = %s", (aid,))
+        assert a["status"] == "complete" and a["decision"] == "DATA_UNAVAILABLE"
+        assert "no current element set" in a["explanation"]
+    finally:
+        if aid:
+            db.execute("admin", "DELETE FROM agent_assessment WHERE assessment_id = %s", (aid,))
+        db.execute("admin", "DELETE FROM conjunction_event WHERE event_id = %s", (event_id,))

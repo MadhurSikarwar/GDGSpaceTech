@@ -58,6 +58,7 @@ CONFIG_RULES = {
     "ingest_interval_hours": _positive(2, 48), "celestrak_groups": _groups, "catalog_refresh_cron": _cron,
     "aggregation_cron": _cron, "reentry_cron": _cron, "backup_cron": _cron, "backup_keep": _positive(1, 60),
     "reentry_train_cron": _cron, "spacetrack_daily_cron": _cron, "spacetrack_weekly_cron": _cron,
+    "stale_data_hours": _positive(1, 168),
 }
 
 

@@ -7,7 +7,7 @@ alert, so the database itself limits what this blueprint can change.
 from flask import Blueprint, abort, request
 
 from orbitwatch import db
-from orbitwatch.web.common import account, body, clean, current_user, login_required, ok
+from orbitwatch.web.common import account, body, clean, current_user, int_arg, login_required, ok
 
 bp = Blueprint("me_api", __name__, url_prefix="/api/me")
 
@@ -27,6 +27,46 @@ def subscriptions():
           FROM subscription s JOIN space_object so ON so.norad_id = s.norad_id
          WHERE s.user_id = %s ORDER BY s.subscribed_on DESC""", (uid,))
     return ok({"items": clean(rows)})
+
+
+@bp.get("/watchlist")
+@login_required
+def watchlist():
+    """Every object the user follows, with its orbit and each close approach from `days` back to `days` ahead
+    (default 7): the data of the My watchlist page. One query for the objects, one for all their events."""
+    days = min(max(int_arg("days", 7), 1), 14)
+    acct, uid = account(), current_user()["user_id"]
+    objects = db.query(acct, """
+        SELECT s.norad_id, s.subscribed_on, so.name, so.object_type, so.status,
+               co.perigee_km, co.apogee_km, co.inclination, co.epoch
+          FROM subscription s JOIN space_object so ON so.norad_id = s.norad_id
+          LEFT JOIN current_orbit co ON co.norad_id = s.norad_id
+         WHERE s.user_id = %s ORDER BY so.name""", (uid,))
+    events = []
+    if objects:
+        ids = [o["norad_id"] for o in objects]
+        marks = ",".join(["%s"] * len(ids))
+        events = db.query(acct, f"""
+            SELECT event_id, time_of_closest_approach, miss_distance_km, relative_velocity, risk_level,
+                   probability_of_collision, primary_norad, primary_name, primary_type,
+                   secondary_norad, secondary_name, secondary_type
+              FROM v_conjunction_detail
+             WHERE (primary_norad IN ({marks}) OR secondary_norad IN ({marks}))
+               AND time_of_closest_approach BETWEEN UTC_TIMESTAMP() - INTERVAL %s DAY
+                                                AND UTC_TIMESTAMP() + INTERVAL %s DAY
+             ORDER BY time_of_closest_approach LIMIT 5000""", (*ids, *ids, days, days))
+    by_object = {o["norad_id"]: [] for o in objects}
+    for e in events:
+        for role, other in (("primary", "secondary"), ("secondary", "primary")):
+            n = e[f"{role}_norad"]
+            if n in by_object:
+                by_object[n].append({"event_id": e["event_id"], "tca": e["time_of_closest_approach"],
+                                     "miss_km": e["miss_distance_km"], "rel_vel_kms": e["relative_velocity"],
+                                     "risk": e["risk_level"], "pc": e["probability_of_collision"],
+                                     "other_norad": e[f"{other}_norad"], "other_name": e[f"{other}_name"],
+                                     "other_type": e[f"{other}_type"]})
+    items = [{**o, "events": by_object[o["norad_id"]]} for o in objects]
+    return ok({"days": days, "items": clean(items)})
 
 
 @bp.post("/subscriptions")

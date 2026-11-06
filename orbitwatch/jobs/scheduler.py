@@ -89,10 +89,11 @@ def email_tick():
 
 
 def _anything_to_notify():
+    from orbitwatch import push
     row = db.query_one("jobs", """SELECT (SELECT COUNT(*) FROM alert WHERE sent_on > NOW() - INTERVAL 10 MINUTE)
                                         + (SELECT COUNT(*) FROM maneuver_decision
                                             WHERE decided_at > NOW() - INTERVAL 10 MINUTE) AS n""")
-    return row["n"] > 0
+    return row["n"] > 0 or push.pending_count() > 0          # push notifications waiting for a retry
 
 
 def spacetrack_daily():

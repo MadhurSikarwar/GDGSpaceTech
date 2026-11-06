@@ -1,9 +1,10 @@
 // AI decision support panel: runs the decision agent on one close approach (real or SYNTHETIC demo),
 // shows its trace live, the recommendation, and the human review: approve (simulated execution)
 // or reject with feedback and an optional immediate re-plan.
-import { get, post } from './api.js';
+import { csvUrl, get, post } from './api.js';
 import { term } from './drawers.js';
 import { esc, fmt, h, modal, riskBadge, simTag, synTag, toast } from './ui.js';
+import { cmpValue } from './logic.js';
 import { explain } from './plain.js';
 
 const DECISION_LABEL = {
@@ -22,6 +23,7 @@ export async function agentPanel(container, subject, app, { assessmentId } = {})
       <div class="sub">An AI agent looks at this close approach, runs the physics checks and recommends what to do. A person always has to approve a burn.</div>
       <details class="how"><summary>How it works</summary><p class="small muted" style="margin:8px 0 0">An LLM agent chooses deterministic tools (SGP4, Foster ${term('pc', 'Pc')}, ${term('cw', 'Clohessy–Wiltshire')} optimiser, ground stations), reads the results and recommends what to do. Guardrails reject anything the physics does not support; every burn needs ${term('approval', 'human approval')}.</p></details></div>
       <div class="row"><select id="agHistory" class="hidden" aria-label="Earlier assessments" style="width:auto;height:28px"></select>
+        <button class="btn sm hidden" id="agCompare" title="Compare two assessments of this close approach side by side">Compare</button>
         <span class="tag plain" id="agEngine">—</span><button class="btn primary sm" id="agRun">Run AI assessment</button></div></div>
     <div id="agBody"><div class="muted small mono">No assessment yet for this event.</div></div></section>`);
   container.appendChild(el);
@@ -31,6 +33,9 @@ export async function agentPanel(container, subject, app, { assessmentId } = {})
   let timer = null;
   let stopped = false;
   let current = null;
+  let history = [];
+  const cmpBtn = el.querySelector('#agCompare');
+  cmpBtn.addEventListener('click', () => { if (current) compareDialog(current, history, app); });
 
   try {
     const st = await get('/agent/status');
@@ -45,6 +50,8 @@ export async function agentPanel(container, subject, app, { assessmentId } = {})
   const loadHistory = async (selectId) => {
     try {
       const { items } = await get(`${base}/assessments`);
+      history = items;
+      cmpBtn.classList.toggle('hidden', !items.length);
       if (items.length > 1) {
         hist.classList.remove('hidden');
         hist.innerHTML = items.map((a) => `<option value="${a.assessment_id}">#${a.assessment_id} · ${esc((a.decision || a.status).replace(/_/g, ' ').toLowerCase())} · ${fmt.dt(a.started_at).slice(5, 16)}</option>`).join('');
@@ -219,4 +226,114 @@ function rejectDialog(a, done) {
     toast(res.replan_assessment_id ? `Rejected — re-planning (assessment #${res.replan_assessment_id})` : 'Recommendation rejected');
     await done(res);
   } });
+}
+
+// ---- two assessments side by side (a re-plan against the recommendation it replaced, or any two runs) -----------------
+// Three views of the pair: the summary fields, each run's burn options, and each run's full agent trace. Any assessment
+// can be compared, also one of another close approach (type its number). Exports: CSV and PDF (Analyst role), and the
+// browser's print dialog.
+async function compareDialog(current, history, app) {
+  const others = history.filter((i) => i.assessment_id !== current.assessment_id);
+  const parent = others.find((o) => o.assessment_id === current.parent_assessment_id);
+  const older = others.find((o) => o.assessment_id < current.assessment_id);
+  let other = (parent || older || others[0])?.assessment_id || null;
+  let tab = 'summary';
+  const dlg = h(`<dialog class="modal wide cmp"><div class="cmp-head"><h2>Compare assessments</h2>
+      <form class="row cmp-pick" style="gap:8px;align-items:center"><span class="small">#${current.assessment_id} with</span>
+        ${others.length ? `<select name="other" style="width:auto">${others.map((o) => `<option value="${o.assessment_id}" ${o.assessment_id === other ? 'selected' : ''}>#${o.assessment_id} · ${esc((o.decision || o.status).replace(/_/g, ' ').toLowerCase())}</option>`).join('')}</select>
+        <span class="small muted">or</span>` : ''}
+        <input name="any" type="number" min="1" placeholder="any #" style="width:90px" aria-label="Any assessment number"></form></div>
+    <div class="view-toggle cmp-tabs" role="group" aria-label="What to compare">
+      <button type="button" data-tab="summary" class="active">Summary</button><button type="button" data-tab="options">Burn options</button>
+      <button type="button" data-tab="trace">Agent trace</button></div>
+    <div class="cmp-body"><div class="loading">Comparing…</div></div>
+    <div class="actions">${app.can('analyst') ? '<a class="btn" data-csv href="#">Download CSV</a><a class="btn" data-pdf href="#">Download PDF</a>' : ''}
+      <button class="btn" type="button" data-print>Print</button>
+      <button class="btn primary" type="button" data-close>Close</button></div></dialog>`);
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
+  let data = null;
+  const box = dlg.querySelector('.cmp-body');
+  const paint = () => {
+    if (!data) return;
+    const subj = data.subject || {};
+    const headRow = `<tr><th></th><th>#${data.a} (earlier)</th><th>#${data.b} (later)</th><th>Change</th></tr>`;
+    const intro = `<p class="small muted" style="margin:0 0 10px">${esc(subj.primary_name || '')} vs ${esc(subj.secondary_name || '')}${subj.time_of_closest_approach ? ` · TCA ${esc(fmt.dt(subj.time_of_closest_approach))}` : ''}${data.synthetic ? ` ${synTag()}` : ''}${data.same_event ? '' : ' · <b>different close approaches</b>'}</p>`;
+    if (tab === 'summary') {
+      box.innerHTML = `${intro}<div class="table-wrap"><table class="data cmp-table"><thead>${headRow}</thead><tbody>
+        ${data.rows.filter((r) => r.field !== 'assessment_id').map((r) => `<tr class="${r.change ? 'diff' : ''}"><th scope="row">${esc(r.label)}</th>
+          <td class="${r.field === 'explanation' ? 'long' : ''}">${esc(cmpValue(r.field, r.a, DECISION_LABEL))}</td><td class="${r.field === 'explanation' ? 'long' : ''}">${esc(cmpValue(r.field, r.b, DECISION_LABEL))}</td>
+          <td class="chg ${/better/.test(r.change) ? 'better' : /worse/.test(r.change) ? 'worse' : ''}">${esc(r.change)}</td></tr>`).join('')}</tbody></table></div>`;
+    } else if (tab === 'options') {
+      const table = (id, opts) => `<h3 class="cmp-sub">Burn options of #${id}</h3>${opts.length ? `<div class="table-wrap"><table class="data agent-cands"><thead><tr><th>Option</th><th class="num">Δv m/s</th><th>Direction</th>
+        <th class="num">Lead</th><th class="num">Pc after</th><th class="num">Miss after</th><th class="num">Drift km</th><th>Constraints</th></tr></thead><tbody>
+        ${opts.map((o) => `<tr class="${o.chosen ? 'chosen' : ''}"><td class="mono">${esc(o.candidate_id)}${o.chosen ? ' ◀' : ''}</td><td class="num">${fmt.num(o.dv_mps, 3)}</td>
+          <td>${esc(o.direction || '—')}</td><td class="num">${o.lead_time_min == null ? '—' : `T−${fmt.num(o.lead_time_min, 0)}m`}</td><td class="num">${pc(o.pc_after)}</td>
+          <td class="num">${o.miss_after_km == null ? '—' : fmt.num(o.miss_after_km, 2)}</td><td class="num">${o.sma_drift_km == null ? '—' : fmt.num(o.sma_drift_km, 2)}</td>
+          <td>${o.verdict == null ? '<span class="muted small">not evaluated</span>' : o.verdict === 'feasible' ? '<span class="status-ok mono small">✓ feasible</span>' : `<span class="status-bad mono small">✗ ${esc(o.verdict.replace(/^rejected: /, ''))}</span>`}</td></tr>`).join('')}
+        </tbody></table></div>` : '<p class="small muted">No manoeuvre candidates were generated.</p>'}`;
+      box.innerHTML = intro + table(data.a, data.options.a) + table(data.b, data.options.b);
+    } else {
+      const trace = (id, steps) => `<div><h3 class="cmp-sub">Agent trace of #${id} · ${steps.length} steps</h3><ol class="agent-trace">${steps.map((s) => `<li class="a-${esc(s.actor)}">
+        <span class="n">${String(s.step_no).padStart(2, '0')}</span><span class="who">${esc(s.actor)}${s.tool_name ? ` · ${esc(s.tool_name)}` : ''}</span>
+        <span class="what">${esc(s.summary)}</span></li>`).join('')}</ol></div>`;
+      box.innerHTML = `${intro}<div class="cmp-traces">${trace(data.a, data.trace.a)}${trace(data.b, data.trace.b)}</div>`;
+    }
+  };
+  const load = async () => {
+    if (!other) { box.innerHTML = '<p class="small muted">Type the number of another assessment to compare with.</p>'; return; }
+    const [a, b] = [Math.min(current.assessment_id, other), Math.max(current.assessment_id, other)];   // older first
+    dlg.querySelector('[data-csv]')?.setAttribute('href', csvUrl('/assessments/compare', { a, b }));
+    dlg.querySelector('[data-pdf]')?.setAttribute('href', `/api/assessments/compare?a=${a}&b=${b}&format=pdf`);
+    box.innerHTML = '<div class="loading">Comparing…</div>';
+    try {
+      data = await get(`/assessments/compare?a=${a}&b=${b}`);
+      paint();
+    } catch (err) { data = null; box.innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
+  };
+  dlg.querySelector('select[name=other]')?.addEventListener('change', (e) => { other = Number(e.target.value); dlg.querySelector('input[name=any]').value = ''; load(); });
+  dlg.querySelector('.cmp-pick').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const n = Number(e.target.any.value);
+    if (n > 0 && n !== current.assessment_id) { other = n; load(); }
+  });
+  dlg.querySelector('input[name=any]').addEventListener('change', (e) => {
+    const n = Number(e.target.value);
+    if (n > 0 && n !== current.assessment_id) { other = n; load(); }
+  });
+  dlg.querySelector('.cmp-tabs').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-tab]')?.dataset.tab;
+    if (!t) return;
+    tab = t;
+    dlg.querySelectorAll('.cmp-tabs [data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+    paint();
+  });
+  dlg.querySelector('[data-print]').addEventListener('click', () => { if (data) printComparison(data); });
+  dlg.showModal();
+  await load();
+}
+
+// A plain, light page for the browser's print dialog: no extra library, nothing leaves the browser.
+function printComparison(data) {
+  const subj = data.subject || {};
+  const rows = data.rows.map((r) => `<tr${r.change ? ' class="diff"' : ''}><th>${esc(r.label)}</th><td>${esc(cmpValue(r.field, r.a, DECISION_LABEL))}</td>
+    <td>${esc(cmpValue(r.field, r.b, DECISION_LABEL))}</td><td>${esc(r.change)}</td></tr>`).join('');
+  const opts = (id, list) => `<h2>Burn options of #${id}</h2>${list.length ? `<table><thead><tr><th>Option</th><th>Δv m/s</th><th>Direction</th><th>Pc after</th><th>Miss after km</th><th>Constraints</th></tr></thead><tbody>${
+    list.map((o) => `<tr${o.chosen ? ' class="diff"' : ''}><td>${esc(o.candidate_id)}${o.chosen ? ' (chosen)' : ''}</td><td>${fmt.num(o.dv_mps, 3)}</td><td>${esc(o.direction || '—')}</td><td>${pc(o.pc_after)}</td><td>${o.miss_after_km == null ? '—' : fmt.num(o.miss_after_km, 2)}</td><td>${esc(o.verdict || 'not evaluated')}</td></tr>`).join('')}</tbody></table>` : '<p>No manoeuvre candidates were generated.</p>'}`;
+  const w = window.open('', '_blank');
+  if (!w) { toast('Allow pop-ups for this site to print the comparison', 'error'); return; }
+  w.document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>OrbitWatch · assessments #${data.a} vs #${data.b}</title>
+    <style>body{font:12px/1.45 system-ui,sans-serif;color:#111;margin:24px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 6px}p{margin:0 0 14px;color:#444}
+    table{border-collapse:collapse;width:100%}th,td{border:1px solid #bbb;padding:5px 7px;text-align:left;vertical-align:top}
+    thead th{background:#eee}tbody th{width:22%;font-weight:600}tr.diff td{background:#fff7e0}
+    footer{margin-top:14px;color:#666;font-size:10px}@media print{body{margin:0}}</style></head><body>
+    <h1>AI decision support · assessment #${data.a} vs #${data.b}</h1>
+    <p>${esc(subj.primary_name || '')} vs ${esc(subj.secondary_name || '')}${subj.time_of_closest_approach ? ` · TCA ${esc(fmt.dt(subj.time_of_closest_approach))}` : ''}${data.synthetic ? ' · SYNTHETIC demo event' : ''}</p>
+    <table><thead><tr><th></th><th>#${data.a} (earlier)</th><th>#${data.b} (later)</th><th>Change</th></tr></thead><tbody>${rows}</tbody></table>
+    ${opts(data.a, data.options.a)}${opts(data.b, data.options.b)}
+    <footer>OrbitWatch · printed ${esc(fmt.dt(new Date().toISOString()))} · manoeuvres are executed in simulation only</footer></body></html>`);
+  w.document.close();
+  w.focus();
+  w.print();
 }

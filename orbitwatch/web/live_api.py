@@ -156,11 +156,26 @@ def system_status():
         "spacetrack_configured": spacetrack.configured(),
         "email_delivery": config.smtp_configured(),
         "history_element_sets": _history_count(),
+        **_freshness(),
     }
     if user and user["role"] == "admin":
         from orbitwatch import notify
         out["email_queue"] = clean(notify.due_summary() or {})
     return ok(out)
+
+
+def _freshness():
+    """What the stale-data notice compares: the configured threshold and the last successful screening."""
+    try:
+        hours = db.query_one("viewer", "SELECT config_value FROM system_config WHERE config_key = 'stale_data_hours'")
+        last = db.query_one("viewer", "SELECT last_screening_at FROM v_screening_freshness")
+    except Exception:  # noqa: BLE001 - the status must load on a database without this view yet
+        hours, last = None, None
+    try:
+        threshold = float(hours["config_value"]) if hours else 8.0
+    except ValueError:
+        threshold = 8.0
+    return clean({"stale_after_hours": threshold, "last_screening_at": last["last_screening_at"] if last else None})
 
 
 def _history_count():

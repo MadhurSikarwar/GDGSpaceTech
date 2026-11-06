@@ -97,6 +97,13 @@ class DecisionAgent:
         self.tools = (DemoAgentTools if synthetic else AgentTools)(event_id, account, min_miss_km=min_miss_km)
         self.step = 0
         self.seen_calls = {}
+        self.data_error = None   # first tool failure (e.g. no current element set); ends the run as DATA_UNAVAILABLE
+
+    def _data_unavailable(self, d=None):
+        """The facts the decision rests on could not be computed: record why instead of crashing."""
+        why = self.data_error or "the risk assessment could not be computed"
+        return {**(d or {}), "decision": "DATA_UNAVAILABLE", "selected_candidate_id": None,
+                "explanation": f"The assessment could not be completed with the available data: {why}."}
 
     # ---- trace -----------------------------------------------------------
     def record(self, actor, summary, tool_name=None, args=None, payload=None):
@@ -115,6 +122,8 @@ class DecisionAgent:
                 self.record("guardrail", f"repeated {name} call answered from the earlier result", name, args)
             return result
         result = self.tools.call(name, args or {})
+        if "error" in result and self.data_error is None:
+            self.data_error = result.get("summary") or result["error"]
         self.seen_calls[key] = result
         self.record("tool", result.get("summary", ""), name, args, result)
         return result
@@ -253,7 +262,9 @@ class DecisionAgent:
     def run_deterministic(self):
         for name in ("get_conjunction", "get_space_weather", "compute_collision_probability", "assess_risk"):
             self.call_tool(name, {})
-        risk = self.tools.cache["risk"]
+        risk = self.tools.cache.get("risk")
+        if risk is None:
+            return self._data_unavailable()
         if risk["tca_passed"]:
             return {"decision": "DATA_UNAVAILABLE", "selected_candidate_id": None, "explanation": "The time of closest approach has passed."}
         if risk["risk_tier"] == "MEDIUM":
@@ -277,7 +288,11 @@ class DecisionAgent:
         for name in ("get_conjunction", "compute_collision_probability", "assess_risk"):
             if name not in {k[0] for k in self.seen_calls}:
                 self.call_tool(name, {})
-        risk = t.cache["risk"]
+        risk = t.cache.get("risk")
+        if risk is None:
+            if d.get("decision") != "DATA_UNAVAILABLE":
+                self.record("guardrail", "the risk tier could not be computed: a decision cannot rest on missing data")
+            return self._data_unavailable(d)
         decision, chosen = d.get("decision"), d.get("selected_candidate_id")
         if risk["tca_passed"]:
             return {**d, "decision": "DATA_UNAVAILABLE", "selected_candidate_id": None}
@@ -328,6 +343,8 @@ class DecisionAgent:
     def explain(self, d):
         """Deterministic explanation built only from tool numbers (used when the LLM gave none)."""
         t = self.tools
+        if "risk" not in t.cache or "pc" not in t.cache:
+            return self._data_unavailable()["explanation"]
         conj, risk, pc = t.cache.get("conjunction") or t.get_conjunction(), t.cache["risk"], t.cache["pc"]
         base = (f"{conj['primary']['name']} passes {conj['miss_distance_km']} km from {conj['secondary']['name']} at "
                 f"{conj['relative_velocity_km_s']} km/s in {conj['hours_to_tca']} h; Pc {pc['pc']:.1e} puts it in the "

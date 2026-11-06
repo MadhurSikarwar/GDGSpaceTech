@@ -232,3 +232,105 @@ def test_fl18_every_check_the_planner_can_fail_has_a_plain_reason():
     names = set(re.findall(r'"(\w+)":', block)) | set(re.findall(r'checks\["(\w+)"\]', src))
     assert len(names) >= 7                                                    # the six fixed checks and the reviewer's minimum miss
     assert names <= set(run("plain.js", "console.log(JSON.stringify(Object.keys(m.WHY_NOT)));"))
+
+
+# ----------------------------------------------------------------------------- logic.js (account, watchlist, banner, compare)
+def test_fl20_device_names_from_user_agents():
+    out = run("logic.js", """console.log(JSON.stringify([
+      m.deviceName('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'),
+      m.deviceName('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36 Edg/130.0'),
+      m.deviceName('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15'),
+      m.deviceName('Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0'),
+      m.deviceName('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile Safari/604.1'),
+      m.deviceName('')]));""")
+    assert out == ["Chrome on Windows", "Edge on Windows", "Safari on macOS", "Firefox on Android", "Safari on iOS", "Browser"]
+
+
+def test_fl21_close_approaches_drawn_on_top_of_each_other_are_grouped():
+    out = run("logic.js", """
+      const from = Date.parse('2026-11-01T00:00:00Z'), to = Date.parse('2026-11-15T00:00:00Z');
+      const ev = (iso, risk, miss) => ({ tca: iso, risk, miss_km: miss });
+      const events = [ev('2026-11-03T10:00:00Z', 'LOW', 5), ev('2026-11-03T10:20:00Z', 'HIGH', 1.2),
+                      ev('2026-11-03T11:00:00Z', 'MEDIUM', 3), ev('2026-11-10T00:00:00Z', 'CRITICAL', 0.4),
+                      ev('2026-10-20T00:00:00Z', 'CRITICAL', 0.1)];                 // outside the window
+      const c = m.clusterEvents(events, { from, to, width: 600, px: 10 });
+      console.log(JSON.stringify(c.map((x) => ({ n: x.count, risk: x.risk, min: x.minMiss, closest: x.closest.risk }))));""")
+    assert out == [{"n": 3, "risk": "HIGH", "min": 1.2, "closest": "HIGH"}, {"n": 1, "risk": "CRITICAL", "min": 0.4, "closest": "CRITICAL"}]
+
+
+def test_fl22_stale_when_the_download_or_the_screening_is_too_old():
+    out = run("logic.js", """
+      const now = Date.parse('2026-11-05T12:00:00Z');
+      const h = (n) => new Date(now - n * 3600000).toISOString();
+      console.log(JSON.stringify([
+        m.staleness({ newestDownload: h(2), lastScreening: h(3), thresholdH: 8, now }).what,
+        m.staleness({ newestDownload: h(9), lastScreening: h(3), thresholdH: 8, now }).what,
+        m.staleness({ newestDownload: h(2), lastScreening: h(30), thresholdH: 8, now }).what,
+        m.staleness({ newestDownload: h(2), lastScreening: null, thresholdH: 8, now }).what,
+        m.staleness({ newestDownload: h(9), lastScreening: h(9), thresholdH: 12, now }).stale]));""")
+    assert out == [None, "download", "screening", "screening", False]
+
+
+def test_fl23_comparison_cells_are_readable():
+    out = run("logic.js", """console.log(JSON.stringify([
+      m.cmpValue('pc_after', 1.234e-6), m.cmpValue('parent_assessment_id', 316), m.cmpValue('delta_v_mps', 0.1),
+      m.cmpValue('decision', 'MONITOR', { MONITOR: 'Monitor' }), m.cmpValue('feedback', null), m.cmpValue('burn_time', '2026-11-05T10:00:00Z')]));""")
+    assert out[:5] == ["1.2e-6", "#316", "0.100", "Monitor", "—"] and "IST" in out[5] and "UTC" in out[5]
+
+
+def test_fl24_exports_embed_only_the_fonts_the_picture_uses():
+    css = ("/* latin */ @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; src: url(https://x/mono500.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131; }"
+           " /* cyrillic */ @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; src: url(https://x/cyr.woff2) format('woff2'); unicode-range: U+0400-045F; }"
+           " /* latin */ @font-face { font-family: 'IBM Plex Mono'; font-weight: 600; src: url(https://x/mono600.woff2) format('woff2'); unicode-range: U+0000-00FF; }"
+           " /* latin */ @font-face { font-family: 'Archivo'; font-stretch: 100% 125%; font-weight: 300 800; src: url(https://x/archivo.woff2) format('woff2'); unicode-range: U+0000-00FF; }"
+           " /* latin */ @font-face { font-family: 'IBM Plex Sans'; font-weight: 400; src: url(https://x/sans.woff2) format('woff2'); unicode-range: U+0000-00FF; }")
+    out = run("svg-export.js", f"""
+      const fonts = new Map([['IBM Plex Mono', new Set([500])], ['Archivo', new Set([700])]]);
+      console.log(JSON.stringify(m.pickFontFaces({json.dumps(css)}, fonts).map((b) => b.split('url(')[1].split(')')[0])));""")
+    assert out == ["https://x/mono500.woff2", "https://x/archivo.woff2"]
+
+
+# ----------------------------------------------------------------------------- sw.js (push notifications)
+def test_fl25_service_worker_shows_pushes_and_opens_the_close_approach():
+    """sw.js run against a stand-in for the browser's service-worker global: a push shows the notification it
+    carries; a click focuses an open OrbitWatch tab and asks it to open the event, or opens a new tab."""
+    sw = (JS.parent / "sw.js").as_posix()
+    code = f"""
+      import {{ readFileSync }} from 'node:fs'; import vm from 'node:vm';
+      const handlers = {{}}, shown = [], posted = [], opened = [];
+      let tabs = [], focused = 0, waits = [];
+      const self = {{ addEventListener: (t, f) => {{ handlers[t] = f; }}, skipWaiting() {{}}, location: {{ origin: 'https://ow.test' }},
+        clients: {{ claim: async () => {{}}, matchAll: async () => tabs, openWindow: async (u) => {{ opened.push(u); }} }},
+        registration: {{ showNotification: async (title, o) => {{ shown.push({{ title, ...o }}); }} }} }};
+      vm.runInNewContext(readFileSync('{sw}', 'utf8'), {{ self, URL, console }});
+      const ev = (x) => ({{ ...x, waitUntil: (p) => waits.push(p) }});
+      handlers.push(ev({{ data: {{ json: () => ({{ title: 'HIGH close approach', body: 'ISS vs debris', url: '/#/conjunctions?event=7', tag: 'ow-alert-7' }}) }} }}));
+      handlers.push(ev({{ data: {{ json: () => {{ throw new Error('not json'); }}, text: () => 'plain text' }} }}));
+      await Promise.all(waits); waits = [];
+      tabs = [{{ url: 'https://ow.test/#/dashboard', focus: async () => {{ focused++; }}, postMessage: (m) => posted.push(m) }}];
+      handlers.notificationclick(ev({{ notification: {{ close() {{}}, data: {{ url: '/#/conjunctions?event=7' }} }} }}));
+      await Promise.all(waits); waits = [];
+      tabs = [];
+      handlers.notificationclick(ev({{ notification: {{ close() {{}}, data: {{ url: '/#/conjunctions?event=7' }} }} }}));
+      await Promise.all(waits);
+      console.log(JSON.stringify({{ shown: shown.map((s) => [s.title, s.body, s.tag, s.data.url]), posted, focused, opened, hasFetch: 'fetch' in handlers }}));"""
+    r = subprocess.run([NODE, "--input-type=module", "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["shown"] == [["HIGH close approach", "ISS vs debris", "ow-alert-7", "/#/conjunctions?event=7"],
+                            ["OrbitWatch", "plain text", None, "/"]]
+    assert out["posted"] == [{"type": "ow-open", "url": "https://ow.test/#/conjunctions?event=7"}] and out["focused"] == 1
+    assert out["opened"] == ["https://ow.test/#/conjunctions?event=7"]
+    assert out["hasFetch"] is False            # the worker never intercepts the site's requests
+
+
+def test_fl26_grouped_dots_never_sit_closer_than_the_spacing():
+    out = run("logic.js", """
+      const from = Date.parse('2026-11-01T00:00:00Z'), to = Date.parse('2026-11-29T00:00:00Z');
+      const events = [];
+      for (let i = 0; i < 400; i++) events.push({ tca: new Date(from + Math.pow(i / 400, 3) * 27 * 86400000).toISOString(),
+        risk: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'][i % 4], miss_km: (i % 17) + 0.5 });
+      const c = m.clusterEvents(events, { from, to, width: 624, px: 22 });
+      const gaps = c.slice(1).map((g, i) => g.x - c[i].x);
+      console.log(JSON.stringify({ n: c.length, total: c.reduce((s, g) => s + g.count, 0), minGap: Math.min(...gaps) }));""")
+    assert out["total"] == 400 and out["minGap"] >= 22 and out["n"] > 5

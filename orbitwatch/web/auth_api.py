@@ -4,9 +4,13 @@ Rate limits are kept in MySQL (orbitwatch/ratelimit.py), so they hold across
 restarts and processes. Forgot-password always answers the same way, whether
 or not the e-mail has an account.
 """
-from flask import Blueprint, request, session
+import hashlib
+import time
 
-from orbitwatch import auth, config, db, events, notify, ratelimit
+from flask import Blueprint, current_app, request, session
+from itsdangerous import BadSignature, URLSafeTimedSerializer
+
+from orbitwatch import auth, challenge, config, db, events, notify, ratelimit
 from orbitwatch.web.common import body, current_user, login_required, ok
 
 bp = Blueprint("auth_api", __name__, url_prefix="/api/auth")
@@ -38,18 +42,83 @@ def register():
     return ok({"user": _session_user(user)}, 201) if user else ok({"user_id": user_id}, 201)
 
 
+CHALLENGE_AFTER_EMAIL = 3    # failed logins on an account (any address) before the browser must solve a challenge
+CHALLENGE_AFTER_IP = 5       # failed logins from an address (any account) before the same
+NOTICE_AFTER = 10            # failed logins on an account before its owner is e-mailed (at most once an hour)
+DEVICE_COOKIE = "orbitwatch_device"
+DEVICE_DAYS = 90
+
+
+def _device_serializer():
+    return URLSafeTimedSerializer(current_app.secret_key, salt="orbitwatch-trusted-device")
+
+
+def _email_tag(email):
+    return hashlib.sha256(f"device:{email}".encode()).hexdigest()[:32]
+
+
+def _trusted_device(email):
+    """This browser logged in to this account before (signed cookie, 90 days). Its owner is then neither locked out
+    by failures other people caused on the account, nor asked to solve a challenge."""
+    raw = request.cookies.get(DEVICE_COOKIE)
+    if not raw or not email:
+        return False
+    try:
+        return _device_serializer().loads(raw, max_age=DEVICE_DAYS * 86400) == _email_tag(email)
+    except BadSignature:
+        return False
+
+
+def _notify_owner(email, ip):
+    """Repeated failed logins on a real account: tell its owner, at most once an hour."""
+    if ratelimit.count("login_email", email) < NOTICE_AFTER or ratelimit.exceeded("login_notice", email):
+        return
+    user = db.query_one("auth", "SELECT user_id, name FROM app_user WHERE email = %s AND is_active", (email,))
+    if user is None:
+        return
+    ratelimit.hit("login_notice", email)
+    subject, text = notify.failed_logins_email(user["name"], ratelimit.count("login_email", email), ip)
+    notify.enqueue("security", email, subject, text, user_id=user["user_id"], account="auth",
+                   dedupe_key=f"login-notice:{user['user_id']}:{int(time.time() // 3600)}")
+    notify.dispatch_soon()
+    events.record("auth", "login_attempts", f"Repeated failed logins on {user['name']}'s account", severity="warning",
+                  visibility="admin", entity_type="user", entity_id=user["user_id"], account="auth")
+
+
 @bp.post("/login")
 def login():
     data = body()
-    key = f"{(data.get('email') or '').strip().lower()}|{request.remote_addr}"
-    if ratelimit.exceeded("login", key):
+    email = (data.get("email") or "").strip().lower()
+    ip = request.remote_addr or "-"
+    key = f"{email}|{ip}"
+    trusted = _trusted_device(email)
+    # Three buckets: this e-mail from this address, this address for any e-mail (password spraying), and this
+    # e-mail from any address (one account attacked from many addresses). A trusted device skips the last one, so an
+    # attacker cannot lock the real owner out of their own account.
+    if (ratelimit.exceeded("login", key) or ratelimit.exceeded("login_ip", ip)
+            or (not trusted and ratelimit.exceeded("login_email", email))):
         return ok({"error": "Too many failed attempts. Try again in a few minutes."}, 429)
+    if not trusted and (ratelimit.count("login_email", email) >= CHALLENGE_AFTER_EMAIL
+                        or ratelimit.count("login_ip", ip) >= CHALLENGE_AFTER_IP):
+        if not challenge.verify(data.get("challenge")):
+            # Not counted as a failed login: the password was not even checked.
+            return ok({"error": "Please wait while your browser confirms you are a person, then try again.",
+                       "challenge": challenge.issue()}, 401)
     user = auth.authenticate(data.get("email"), data.get("password"))
     if user is None:
         ratelimit.hit("login", key)
+        ratelimit.hit("login_ip", ip)
+        ratelimit.hit("login_email", email)
+        _notify_owner(email, ip)
         return ok({"error": "Incorrect email or password."}, 401)
     ratelimit.clear("login", key)
-    return ok({"user": _session_user(user)})
+    # The account's owner proved the password, so the per-account count starts again. The per-address count is not
+    # cleared: an attacker could otherwise reset it by logging in to an account of their own between guesses.
+    ratelimit.clear("login_email", email)
+    resp, status = ok({"user": _session_user(user)})
+    resp.set_cookie(DEVICE_COOKIE, _device_serializer().dumps(_email_tag(email)), max_age=DEVICE_DAYS * 86400,
+                    httponly=True, samesite="Strict", secure=current_app.config["SESSION_COOKIE_SECURE"], path="/api/auth")
+    return resp, status
 
 
 @bp.post("/logout")

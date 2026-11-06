@@ -24,8 +24,9 @@ def _fresh_rate_limits():
     try:
         from orbitwatch import db
         db.execute("admin", "DELETE FROM rate_limit_event WHERE bucket LIKE %s OR bucket LIKE %s OR bucket LIKE %s "
-                            "OR bucket LIKE %s", ("register:127.0.0.1%", "forgot_ip:127.0.0.1%", "reset:127.0.0.1%",
-                                                 "forgot_email:%@example.test"))
+                            "OR bucket LIKE %s OR bucket LIKE %s OR bucket LIKE %s",
+                   ("register:127.0.0.1%", "forgot_ip:127.0.0.1%", "reset:127.0.0.1%", "forgot_email:%@example.test",
+                    "login_ip:127.0.0.1%", "login_email:%@example.test"))
     except Exception:  # noqa: BLE001
         pass
     yield

@@ -138,3 +138,7 @@ temp/
 HANDOFF_CONTEXT.md
 PHASES.md
 TILL_NOW.md
+# Playwright MCP page snapshots
+.playwright-mcp/
+# Backups of .env (they hold the same secrets)
+.env.bak*

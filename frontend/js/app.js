@@ -1,6 +1,6 @@
 // OrbitWatch single-page shell: hash router, role-aware navigation, system status strip,
 // live updates, mobile navigation, drawers (glossary, event log), guided tour and alert badge.
-import { get, post } from './api.js';
+import { del, get, post } from './api.js';
 import { destroyAll } from './charts.js';
 import { initEventLog, initGlossary, toggleDrawer } from './drawers.js';
 import { connect, live, onLive, reconnect } from './live.js';
@@ -8,6 +8,7 @@ import { initPalette } from './palette.js';
 import { initShortcuts, toggleKeys } from './shortcuts.js';
 import { startTour, tourSeen } from './tour.js';
 import { indiaSun, sunPhase } from './globe-core.js';
+import { staleness } from './logic.js';
 import { istHMS, utcHMS } from './time.js';
 import { esc, fmt, toast } from './ui.js';
 
@@ -47,6 +48,7 @@ const ROUTES = [
   { re: /^\/insights$/, view: 'insights', title: 'How it works' },
   { re: /^\/database$/, view: 'database', title: 'Database' },
   { re: /^\/alerts$/, view: 'alerts', title: 'My alerts', role: 'viewer' },
+  { re: /^\/watchlist$/, view: 'watchlist', title: 'My watchlist', role: 'viewer' },
   { re: /^\/account$/, view: 'account', title: 'Account', role: 'viewer' },
   { re: /^\/reports$/, view: 'reports', title: 'Reports', role: 'analyst' },
   { re: /^\/admin$/, view: 'admin', title: 'Administration', role: 'admin' },
@@ -58,7 +60,7 @@ const ROUTES = [
 
 const NAV = [
   ['#/globe', 'Globe'], ['#/dashboard', 'Dashboard'], ['#/catalog', 'Catalogue'], ['#/conjunctions', 'Close approaches'],
-  ['#/demo', 'Demo lab'], ['#/database', 'Database'], ['#/alerts', 'My alerts', 'viewer'], ['#/reports', 'Reports', 'analyst'], ['#/admin', 'Admin', 'admin'],
+  ['#/demo', 'Demo lab'], ['#/database', 'Database'], ['#/watchlist', 'Watchlist', 'viewer'], ['#/alerts', 'My alerts', 'viewer'], ['#/reports', 'Reports', 'analyst'], ['#/admin', 'Admin', 'admin'],
 ];
 
 const icon = (id) => `<svg><use href="#i-${id}"/></svg>`;
@@ -95,6 +97,7 @@ function systemSummary() {
   const hb = s.scheduler.heartbeat || {};
   const ingest = (s.jobs || []).find((j) => j.job_id === 'ingest_and_screen');
   return {
+    newest,
     dataState: fresh.length ? 'ok' : newest ? 'warn' : 'bad',
     dataText: newest ? `newest download ${fmt.rel(newest)}` : 'never downloaded',
     tracked: s.coverage.with_orbit, catalogued: s.coverage.objects_in_orbit, coverage: s.coverage.coverage_pct,
@@ -132,6 +135,61 @@ function renderSysbar() {
   if (document.getElementById('statusPanel')) paintStatusPanel();
   renderMobileStatus();
   tickClock();
+  renderStaleBanner();
+}
+
+// ------------------------------------------------------------------ "Save image" on chart and diagram cards
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-save-image]');
+  if (!b) return;
+  b.disabled = true;
+  try {
+    const { saveCardPicture } = await import('./svg-export.js');
+    await saveCardPicture(b.closest('.card'));
+    toast('Picture saved');
+  } catch (err) { toast(err.message, 'error'); } finally { b.disabled = false; }
+});
+
+// ------------------------------------------------------------------ stale-data banner
+// Positions, close approaches and alerts are only as current as the newest element-set download and the last screening.
+// When either is older than the administrator's threshold (system_config stale_data_hours, 8 h by default), every page
+// says so. Fixed at the bottom left so it never moves a page's layout (the globe fills the window); the landing page
+// keeps its full-screen intro. Dismissed per session.
+const STALE_KEY = 'ow.staleDismissed';
+function staleDismissed(newest) {
+  try { return sessionStorage.getItem(STALE_KEY) === String(newest); } catch { return false; }
+}
+function renderStaleBanner() {
+  const s = systemSummary();
+  const st = s ? staleness({ newestDownload: s.newest, lastScreening: app.system.last_screening_at,
+    thresholdH: app.system.stale_after_hours ?? 8 }) : { stale: false };
+  const show = st.stale && !document.body.classList.contains('landing') && !staleDismissed(s.newest);
+  let el = document.getElementById('staleBanner');
+  if (!show) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'staleBanner';
+    el.className = 'banner warn stale-banner';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+    el.addEventListener('click', (e) => {
+      if (!e.target.closest('[data-dismiss]')) return;
+      try { sessionStorage.setItem(STALE_KEY, String(systemSummary()?.newest)); } catch { /* the banner just closes */ }
+      el.remove();
+    });
+  }
+  const fix = s.schedState === 'ok'
+    ? 'The scheduler is running: fresh data should arrive at its next refresh.'
+    : app.can('admin')
+      ? 'The scheduler is stopped. Start the website with start-website.bat (or run <span class="mono">ow service</span>) and it downloads and screens again within minutes.'
+      : 'The automatic refresh is not running; an administrator needs to restart it.';
+  const lastScreen = app.system.last_screening_at;
+  const what = st.what === 'download'
+    ? (s.newest ? `newest download ${esc(fmt.rel(s.newest))}` : 'nothing downloaded yet')
+    : (lastScreen ? `close approaches last screened ${esc(fmt.rel(lastScreen))}` : 'close approaches never screened');
+  el.innerHTML = `<div><strong>Orbital data is out of date: ${what}.</strong>
+      Positions, close approaches and alerts may not reflect the sky right now. ${fix}</div>
+    <button type="button" class="icon-btn" data-dismiss aria-label="Hide this notice for this session" title="Hide for this session">×</button>`;
 }
 
 function statusRows() {
@@ -364,7 +422,7 @@ function toggleUserMenu() {
   btn.setAttribute('aria-expanded', 'true');
   m.querySelector('#logoutBtn').addEventListener('click', async () => {
     closeUserMenu();
-    await post('/auth/logout');
+    await logout();
     app.user = null;
     toast('Logged out');
     reconnect();
@@ -421,7 +479,7 @@ function renderMobileNav(path) {
   nav.querySelector('#mnClose').addEventListener('click', () => setMobileNav(false));
   nav.querySelector('#mnLogout')?.addEventListener('click', async () => {
     setMobileNav(false);
-    await post('/auth/logout');
+    await logout();
     app.user = null;
     reconnect();
     renderChrome();
@@ -449,9 +507,135 @@ function setBadge(n) {
   el.classList.toggle('hidden', !n);
 }
 
+let lastAlertCount = null;
 export async function updateAlertBadge() {
   if (!app.user) return;
-  try { setBadge((await get('/me/alerts/count')).unacknowledged); } catch { /* best effort */ }
+  try {
+    const n = (await get('/me/alerts/count')).unacknowledged;
+    setBadge(n);
+    if (n !== lastAlertCount) { lastAlertCount = n; notifyNewAlerts(); }
+  } catch { /* best effort */ }
+}
+
+// ------------------------------------------------------------------ notifications on this device
+// Opt-in per browser (My account > Notifications). Two modes:
+// * 'push': a real Web Push subscription. The service worker (/sw.js) shows each alert even when no OrbitWatch tab is
+//   open. Needs a secure origin the browser trusts (http://localhost, or HTTPS with a trusted certificate).
+// * 'tab': the fallback where push is unavailable (e.g. the self-signed https://localhost:8443 certificate): a system
+//   notification for each new alert while an OrbitWatch tab is open.
+// Both honour the lowest risk level the user chose. In 'tab' mode the newest alert already seen is remembered per user,
+// so turning this on, or opening a second tab, never replays old alerts; the tag keeps two tabs from showing one twice.
+const NOTIFY_KEY = 'ow.notify';
+const MIN_KEY = 'ow.notifyMin';
+const REASON_KEY = 'ow.notifyReason';      // why this browser fell back to in-tab notifications
+const RISK_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+const seenKey = () => `ow.lastAlert.${app.user?.user_id}`;
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* not remembered in private windows */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+};
+export const b64urlToBytes = (s) => {
+  const b = atob(`${s}${'='.repeat((4 - (s.length % 4)) % 4)}`.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+};
+export async function sha256Hex(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+async function currentSubscription() {
+  if (!('serviceWorker' in navigator)) return null;
+  const reg = await navigator.serviceWorker.getRegistration('/');
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+export const deviceAlerts = {
+  supported: () => 'Notification' in window,
+  pushCapable: () => 'serviceWorker' in navigator && 'PushManager' in window && window.isSecureContext,
+  permission: () => ('Notification' in window ? Notification.permission : 'unsupported'),
+  mode() {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return null;
+    const m = store.get(NOTIFY_KEY);
+    return m === 'push' || m === 'tab' ? m : null;
+  },
+  async thisDeviceHash() {
+    try { const s = await currentSubscription(); return s ? await sha256Hex(s.endpoint) : null; } catch { return null; }
+  },
+  setMinLevel(level) { store.set(MIN_KEY, level); },
+  fallbackReason: () => store.get(REASON_KEY),
+  // -> { mode: 'push' | 'tab' | null, reason }
+  async enable(publicKey, minLevel = 'HIGH') {
+    if (!('Notification' in window)) return { mode: null, reason: 'This browser cannot show notifications.' };
+    const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+    if (perm !== 'granted') return { mode: null, reason: 'Notifications were not allowed for this site.' };
+    store.set(MIN_KEY, minLevel);
+    let reason = window.isSecureContext ? 'This browser offers no push service.' : 'Background push needs a secure (HTTPS) address.';
+    if (this.pushCapable()) {
+      try {
+        const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        await navigator.serviceWorker.ready;
+        const sub = (await reg.pushManager.getSubscription())
+          || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(publicKey) });
+        await post('/me/push/subscriptions', { ...sub.toJSON(), user_agent: navigator.userAgent.slice(0, 200) });
+        store.set(NOTIFY_KEY, 'push');
+        store.del(REASON_KEY);
+        return { mode: 'push' };
+      } catch (err) {
+        reason = `Background push is unavailable here (${err.message || err.name}).`;
+      }
+    }
+    store.set(NOTIFY_KEY, 'tab');
+    store.set(REASON_KEY, reason);
+    store.del(seenKey());
+    await notifyNewAlerts();
+    return { mode: 'tab', reason };
+  },
+  async disable() {
+    store.del(NOTIFY_KEY);
+    store.del(REASON_KEY);
+    try {
+      const sub = await currentSubscription();
+      if (sub) {
+        await del(`/me/push/subscriptions/hash/${await sha256Hex(sub.endpoint)}`).catch(() => {});
+        await sub.unsubscribe();
+      }
+    } catch { /* the server also forgets a device once its push service reports it gone */ }
+  },
+};
+
+// The service worker asks an open tab to show the close approach a notification was about.
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.type !== 'ow-open' || typeof e.data.url !== 'string') return;
+  const u = new URL(e.data.url, location.origin);
+  if (u.origin === location.origin) location.href = u.href;
+});
+
+async function notifyNewAlerts() {
+  if (!app.user || deviceAlerts.mode() !== 'tab') return;
+  let items;
+  try { ({ items } = await get('/me/alerts?status=unacknowledged')); } catch { return; }
+  const newest = items.reduce((m, a) => Math.max(m, a.alert_id), 0);
+  const raw = store.get(seenKey());      // null = never looked; "0" = looked, and there were no alerts then
+  const seen = Number(raw) || 0;
+  if (raw === null || newest > seen) store.set(seenKey(), String(Math.max(newest, seen)));
+  if (raw === null) return;              // first look after turning this on: only alerts from now on
+  const min = RISK_RANK[store.get(MIN_KEY)] ?? RISK_RANK.HIGH;
+  items.filter((a) => a.alert_id > seen && (RISK_RANK[a.risk_level] ?? 0) >= min)
+    .slice(0, 3)
+    .forEach((a) => {
+      const n = new Notification(`${a.risk_level} close approach · OrbitWatch`, {
+        body: `${a.primary_name} vs ${a.secondary_name}\nmiss ${Number(a.miss_distance_km).toFixed(3)} km · TCA ${fmt.dt(a.time_of_closest_approach)}`,
+        tag: `ow-alert-${a.alert_id}`,
+        icon: '/favicon.svg',
+      });
+      n.onclick = () => { window.focus(); location.hash = `#/conjunctions?event=${a.event_id}`; n.close(); };
+    });
+}
+
+// Logging out stops this browser's notifications: on a shared computer the next person must not get your alerts.
+async function logout() {
+  if (deviceAlerts.mode()) await deviceAlerts.disable();
+  await post('/auth/logout');
 }
 
 // ------------------------------------------------------------------ router
@@ -486,6 +670,7 @@ async function route() {
   renderChrome();
   view.className = r.full ? 'view full' : 'view';
   document.body.classList.toggle('landing', !!r.landing);
+  renderStaleBanner();
   document.title = `${r.title} · OrbitWatch`;
 
   if (!found) {
@@ -507,10 +692,17 @@ async function route() {
     const mod = await import(`./views/${r.view}.js`);
     if (mine !== seq) return;
     view.innerHTML = '';
-    cleanup = (await mod.render(view, { params, mode: r.mode, app })) || null;
+    const done = (await mod.render(view, { params, mode: r.mode, app })) || null;
+    // The visitor may have moved on while this page was still loading: then a newer page owns `cleanup`, and this
+    // page's own timers and listeners must stop now (keeping it would leak them, and overwrite the newer cleanup).
+    if (mine === seq) cleanup = done;
+    else if (done) { try { done(); } catch { /* ignore */ } }
   } catch (err) {
-    console.error(err);
-    if (mine === seq) view.innerHTML = `<div class="error-box">Could not load this page: ${esc(err.message)}</div>`;
+    // A page abandoned mid-load can fail on DOM that has since been replaced: not an error worth reporting.
+    if (mine === seq) {
+      console.error(err);
+      view.innerHTML = `<div class="error-box">Could not load this page: ${esc(err.message)}</div>`;
+    }
   }
   if (mine === seq) progress.done();
   if (!r.full) view.focus({ preventScroll: true });

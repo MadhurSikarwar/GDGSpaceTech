@@ -245,15 +245,19 @@ def queue_decision_emails(ctx=None):
 
 
 def queue_all(ctx=None):
-    """Scheduled every 5 minutes: alert and decision e-mails (both idempotent through dedupe keys)."""
+    """Scheduled every 5 minutes: alert and decision e-mails (both idempotent through dedupe keys), and push
+    notifications of new alerts on users' devices (idempotent through push_delivery)."""
+    from orbitwatch import push
     try:
         a, _ = queue_alert_emails(ctx)
     except SkipJob:
         a = 0
     b, _ = queue_decision_emails(ctx)
-    if not a and not b:
-        raise SkipJob("nothing new to e-mail")
-    return a + b, f"{a} alert and {b} decision e-mails queued"
+    pushed, push_failed = push.send_alerts(ctx)
+    if not a and not b and not pushed and not push_failed:
+        raise SkipJob("nothing new to e-mail or push")
+    extra = f"; {pushed} push notifications sent" + (f", {push_failed} failed (retried later)" if push_failed else "")
+    return a + b + pushed, f"{a} alert and {b} decision e-mails queued{extra}"
 
 
 def reset_email(name, link, minutes):
@@ -268,6 +272,16 @@ def password_changed_email(name, how):
             f"Hello {name},\n\nThe password of your OrbitWatch account was {how} at "
             f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC, and every other session was signed out.\n\n"
             f"If this was not you, reset your password now: {config.APP_BASE_URL}/#/forgot\n")
+
+
+def failed_logins_email(name, attempts, ip):
+    return ("[OrbitWatch] Repeated failed sign-ins to your account",
+            f"Hello {name},\n\nSomeone tried to sign in to your OrbitWatch account with a wrong password {attempts} times "
+            f"in the last 15 minutes (most recently from address {ip}, at "
+            f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC).\n\n"
+            "If that was you, nothing needs doing. If it was not: your account is still protected, sign-ins from new "
+            "browsers now have to pass an extra check, and browsers you have used before can still sign in as usual. "
+            f"If your password is weak or used elsewhere, change it: {config.APP_BASE_URL}/#/account?tab=password\n")
 
 
 def decision_email(name, d):

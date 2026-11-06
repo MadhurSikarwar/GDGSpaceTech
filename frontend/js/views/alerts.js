@@ -5,7 +5,7 @@ import { empty, errorBox, fmt, h, loading, objLink, riskBadge, table, toast, typ
 export async function render(root) {
   root.appendChild(h(`<div class="page-head"><div><div class="eyebrow">Alerts &amp; subscriptions</div><h1>My alerts</h1>
     <p>When the screening job records a new close approach involving an object you subscribe to, an alert appears here
-    (and in your inbox, if you turn on e-mail alerts).</p></div><div class="row"><a class="btn" href="#/account">Notification settings</a></div></div>`));
+    (and in your inbox, if you turn on e-mail alerts).</p></div><div class="row"><a class="btn" href="#/watchlist">My watchlist</a><a class="btn" href="#/account">Notification settings</a></div></div>`));
   const grid = h(`<div class="stack"></div>`);
   root.appendChild(grid);
 

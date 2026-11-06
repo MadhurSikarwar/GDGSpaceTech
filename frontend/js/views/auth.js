@@ -2,6 +2,7 @@
 import { get, post } from '../api.js';
 import { orbitScene } from '../diagrams.js';
 import { countdown } from '../hud.js';
+import { solveChallenge } from '../logic.js';
 import { esc, fmt, h, hashQuery, toast } from '../ui.js';
 
 const COPY = {
@@ -72,7 +73,7 @@ export async function render(root, { mode, app }) {
     btn.disabled = true;
     try {
       if (mode === 'login' || mode === 'register') {
-        const res = await post(mode === 'login' ? '/auth/login' : '/auth/register', data);
+        const res = mode === 'login' ? await logIn(data, okEl) : await post('/auth/register', data);
         await app.refreshUser();
         toast(mode === 'login' ? `Welcome back, ${res.user.name}` : 'Account created');
         location.hash = next.startsWith('#') ? next : '#/dashboard';
@@ -93,4 +94,20 @@ export async function render(root, { mode, app }) {
     }
   });
   return () => clearInterval(tick);
+}
+
+// After repeated failed logins the server asks the browser to solve a small proof of work before it checks the
+// password again (orbitwatch/challenge.py). That happens here, automatically: the person only waits about a second.
+async function logIn(data, okEl) {
+  try {
+    return await post('/auth/login', data);
+  } catch (ex) {
+    if (!ex.data?.challenge) throw ex;
+    if (!globalThis.crypto?.subtle) throw new Error('This browser cannot complete the sign-in check on this address. Use https:// or localhost.');
+    okEl.textContent = 'Confirming you are a person… (about a second)';
+    try {
+      const answer = await solveChallenge(ex.data.challenge);
+      return await post('/auth/login', { ...data, challenge: answer });
+    } finally { okEl.textContent = ''; }
+  }
 }

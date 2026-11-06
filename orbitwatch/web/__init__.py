@@ -36,10 +36,10 @@ def create_app(https=True):
     )
 
     from orbitwatch.web import (admin_api, agent_api, auth_api, catalog_api, conjunctions_api, database_api, demo_api,
-                                landing_api, live_api, me_api, reports_api, visual_api)
-    from orbitwatch.web.common import memo_clear
+                                landing_api, live_api, me_api, push_api, reports_api, visual_api)
+    from orbitwatch.web.common import current_user, memo_clear
     for bp in (auth_api.bp, catalog_api.bp, conjunctions_api.bp, me_api.bp, reports_api.bp, admin_api.bp,
-               visual_api.bp, landing_api.bp, agent_api.bp, live_api.bp, demo_api.bp, database_api.bp):
+               visual_api.bp, landing_api.bp, agent_api.bp, live_api.bp, demo_api.bp, database_api.bp, push_api.bp):
         app.register_blueprint(bp)
 
     @app.before_request
@@ -53,7 +53,9 @@ def create_app(https=True):
     @app.after_request
     def security_headers(resp):
         # Whatever was written through the API may change what the memoised dashboard aggregates say.
-        if request.method in ("POST", "PUT", "PATCH", "DELETE") and resp.status_code < 400 and request.path.startswith("/api/"):
+        # Logins, logouts and a user's own settings (/api/auth, /api/me) change none of them, so they keep the memo.
+        if (request.method in ("POST", "PUT", "PATCH", "DELETE") and resp.status_code < 400 and request.path.startswith("/api/")
+                and not request.path.startswith(("/api/auth/", "/api/me/"))):
             memo_clear()
         # Large JSON (globe positions for ~20k objects) compresses about 3x.
         if (resp.status_code == 200 and resp.mimetype == "application/json" and not resp.direct_passthrough
@@ -80,25 +82,40 @@ def create_app(https=True):
             return jsonify(error=exc.description or exc.name), exc.code
         return exc
 
+    def failure(error, status, detail):
+        """An error reply. The raw database message (table, column and constraint names) is for administrators;
+        everyone else gets the plain sentence, and the full text is always in the server log."""
+        payload = {"error": error}
+        if detail:
+            try:
+                user = current_user()
+            except Exception:  # noqa: BLE001 - the database may be the very thing that failed
+                user = None
+            if user and user["role"] == "admin":
+                payload["detail"] = detail
+        return jsonify(payload), status
+
     @app.errorhandler(mysql.connector.Error)
     def mysql_error(exc):
         if getattr(exc, "errno", None) in MYSQL_DENIED:
             log.warning("MySQL denied %s %s: %s", request.method, request.path, exc.msg)
-            return jsonify(error="The database refused this operation for your role.", detail=exc.msg), 403
-        if getattr(exc, "errno", None) == 1644:  # SIGNAL from a trigger
+            return failure("The database refused this operation for your role.", 403, exc.msg)
+        if getattr(exc, "errno", None) == 1644:  # SIGNAL from a trigger: its message is written for the user
             return jsonify(error=exc.msg), 409
         if isinstance(exc, mysql.connector.IntegrityError):
-            return jsonify(error="That change conflicts with existing data.", detail=exc.msg), 409
+            log.info("MySQL integrity error on %s %s: %s", request.method, request.path, exc.msg)
+            return failure("That change conflicts with existing data.", 409, exc.msg)
         if isinstance(exc, mysql.connector.DataError) or getattr(exc, "errno", None) in (1265, 1366, 3819):
             # value out of range, wrong type, invalid ENUM, or a CHECK constraint violated
-            return jsonify(error="That value is not valid here.", detail=exc.msg), 400
+            log.info("MySQL rejected a value on %s %s: %s", request.method, request.path, exc.msg)
+            return failure("That value is not valid here.", 400, exc.msg)
         log.exception("MySQL error on %s %s", request.method, request.path)
-        return jsonify(error="Database error", detail=exc.msg), 500
+        return failure("Database error", 500, exc.msg)
 
     @app.errorhandler(PyMongoError)
     def mongo_error(exc):
         log.exception("MongoDB error on %s %s", request.method, request.path)
-        return jsonify(error="Orbital history database unavailable", detail=str(exc)[:300]), 503
+        return failure("Orbital history database unavailable", 503, str(exc)[:300])
 
     @app.route("/")
     def index():

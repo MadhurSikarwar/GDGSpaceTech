@@ -59,4 +59,5 @@ def _mongo():
 
 @bp.get("/database")
 def database():
-    return ok(clean(memo("database_overview", lambda: {"mysql": _mysql(), "mongo": _mongo()})))
+    # About 2 s of COUNT(*) scans on a public page: kept as long as the filter lookups, which change as rarely.
+    return ok(clean(memo("database_overview", lambda: {"mysql": _mysql(), "mongo": _mongo()}, factor=6)))

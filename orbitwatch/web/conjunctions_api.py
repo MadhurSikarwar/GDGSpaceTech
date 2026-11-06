@@ -43,10 +43,12 @@ def _filters(skip=()):
 def list_events():
     acct = account()
     where, params = _filters()
-    order = "time_of_closest_approach" if request.args.get("when", "upcoming") == "upcoming" else \
-        "time_of_closest_approach DESC"
+    # Every order ends in the primary key: with ties (601 miss distances are shared by several events) a page boundary
+    # would otherwise fall at random, and an event could show on two pages or on none.
+    order = "time_of_closest_approach, event_id" if request.args.get("when", "upcoming") == "upcoming" else \
+        "time_of_closest_approach DESC, event_id DESC"
     if request.args.get("sort") == "miss":
-        order = "miss_distance_km"
+        order = "miss_distance_km, event_id"
     if wants_csv():
         require_analyst()
         rows = db.query(acct, f"SELECT * FROM v_conjunction_detail{where} ORDER BY {order} LIMIT 50000", params)

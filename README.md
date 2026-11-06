@@ -233,6 +233,22 @@ operations layer below, both through idempotent migrations with their own grants
 run the agent, decide on manoeuvres and run the demo; everyone may read assessments and decisions
 (reviewer names are visible to analysts and administrators only).
 
+## Personal tools, notifications and exports
+
+| Feature | How it works | Where |
+|---|---|---|
+| **My watchlist** | Every satellite a user follows, each with a risk timeline from 3, 7 or 14 days back to as far ahead. A dot is one close approach (colour and size = risk); approaches drawn on top of each other are grouped into one dot with a count, which opens the close-approach list filtered to that object and those days. Satellites can be followed from the page (NORAD number or name); the page refreshes itself when a screening finishes and saves its timelines as SVG. | `#/watchlist`, `/api/me/watchlist`, `frontend/js/views/watchlist.js` |
+| **Push notifications** | Real Web Push: new close-approach alerts at or above the user's chosen risk level reach every device that turned them on, even with OrbitWatch closed. Messages are encrypted for the browser (RFC 8291) and signed with the site's VAPID key (RFC 8292), generated once into `.env` (`VAPID_PRIVATE_KEY`); only endpoints on the browsers' own push services (Google, Mozilla, Apple, Microsoft) are accepted, and the endpoint (a bearer capability) never reaches the browser or the logs. Delivery is idempotent (`push_delivery`), retried three times, and a device the push service reports gone is removed. The account page lists each device with its last delivery and last problem, sends a test notification and removes devices; logging out turns notifications off for that browser. Push needs a secure origin the browser trusts: `http://localhost` / `127.0.0.1`, or HTTPS with a trusted certificate. With the self-signed `https://localhost:8443` certificate browsers refuse the service worker, so notifications fall back to showing while an OrbitWatch tab is open (the account page says which mode is active). | `orbitwatch/push.py`, `orbitwatch/web/push_api.py`, `frontend/sw.js`, account page |
+| **Comparing AI assessments** | Any two assessments side by side, typically a re-plan and the recommendation it replaced: the decision fields with each change marked better or worse, each run's burn options with their constraint verdicts, and both agent traces. Exports: CSV and a generated PDF (Analyst role; `orbitwatch/pdf.py`, no third-party library), and the browser's print dialog. | close-approach page → AI decision support → Compare, `/api/assessments/compare?a=&b=[&format=csv|pdf]` |
+| **Pictures** | The Database page's six maps save as SVG or PNG; every chart (dashboard, reports, object pages) and the dashboard radar have *Save image*; the globe saves what it shows as PNG. Styles are inlined and the web fonts the picture uses are embedded, so the file looks the same on any computer. | `frontend/js/svg-export.js` |
+| **Data freshness notice** | Every page (except the landing intro) says so when the newest element-set download or the last successful screening is older than `stale_data_hours` (8 by default, editable on Admin → Configuration), with the fix for administrators. | `frontend/js/app.js`, `/api/system/status` |
+| **Login protection** | Failed logins are limited per e-mail + address (8 / 10 min), per address (30 / 15 min, password spraying) and per e-mail (20 / 15 min, one account from many addresses). After 3 failures on an account or 5 from an address the browser must solve a small proof of work (SHA-256, about a second, signed and single-use; `orbitwatch/challenge.py`), so guessing at scale gets expensive without a third-party CAPTCHA. A browser that logged in to the account before (signed 90-day cookie) skips the per-account lock and the check, so attackers cannot lock the owner out. After 10 failures the owner is e-mailed, at most once an hour. | `orbitwatch/web/auth_api.py` |
+| **Error details** | Database error messages (table, column and constraint names) are shown to administrators only; everyone else gets a plain sentence, and the full text is in the server log. | `orbitwatch/web/__init__.py` |
+
+`07_operations.sql` adds `push_subscription`, `push_delivery`, `notification_pref.push_min_risk`, the `security`
+e-mail kind, the `stale_data_hours` setting and the `v_screening_freshness` view. Push endpoints are readable only by
+the auth and jobs accounts, never by the public viewer account that also serves anonymous visitors.
+
 ## Operations
 
 **Objects, orbits and coverage.** The catalogue (CelesTrak SATCAT) lists every object ever tracked; 34,907
@@ -409,6 +425,9 @@ database files.
    accept the self-signed certificate (or set `ORBITWATCH_TLS_CERT` / `ORBITWATCH_TLS_KEY`).
    `ow serve --http --port 5050` serves plain HTTP for development.
 
+**Updating an existing installation:** after pulling new code, run `ow mysql-setup` once. It re-applies the
+migrations (new tables, columns, views and grants) and keeps every row; nothing is dropped.
+
 Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|scheduler|all`, `ow ingest`, `ow screen`, `ow assess EVENT_ID`, `ow space-weather`, `ow aggregate`, `ow load-catalog`, `ow backup`,
 `ow restore-mysql DIR`, `ow restore-mongo DIR`, `ow spacetrack-import --mode watchlist|decaying|decayed|decay`,
 `ow reentry-train`, `ow reentry-predict`, `ow mongo-status`, `ow mongo-stop`. Add `--cached` to
@@ -429,6 +448,10 @@ The orbit, screening, SQL and catalogue-mapping tests need no database; `tests/t
 `tests/test_frontend_logic.py` check the stylesheet and scripts and run the pure frontend modules under
 Node.js. `tests/test_catalogue_queries.py` holds the catalogue search to what plain SQL over the view
 returns, tests the facet counts and the read memo; `tests/test_mail_guard.py` that test addresses never reach a real mail server.
+`tests/test_features.py` covers the watchlist, assessment comparison (CSV and PDF), push notifications (each message is
+decrypted with an independent receiver-side implementation of RFC 8291 and the VAPID signature verified), the login
+challenge, trusted devices and owner notices, error-detail visibility and the shared space-weather cache. Outbound
+requests to push services and NOAA are replaced by fakes there: the suite sends nothing.
 `tests/test_api_roles.py`,
 `tests/test_website_e2e.py` (TC-xx cases by role) and `tests/test_operations.py` (synthetic demo,
 manoeuvre approval and re-plan, password change and reset, rate limits, e-mail delivery to a local SMTP
@@ -440,13 +463,14 @@ configured databases (point `MYSQL_PORT` at a disposable instance). They create 
 ```
 database/mysql/      01_schema.sql 02_routines.sql 03_views.sql 04_security.sql 05_seed.sql 06_extensions.sql 07_operations.sql ownership_transfers.csv
 orbitwatch/          config, db (MySQL pools per role, MongoDB), orbital (SGP4, TLE/OMM), auth, mongo_cluster, mysql_setup,
-                     events (event log), notify (e-mail outbox), ratelimit, decisions (approval + simulation), demo (synthetic),
+                     events (event log), notify (e-mail outbox), ratelimit, challenge (login proof of work), push (Web Push),
+                     pdf (report PDFs), decisions (approval + simulation), demo (synthetic),
                      reconcile, verify, server (cheroot TLS, the localhost certificate, supervised service)
 orbitwatch/jobs/     catalog, ingest, screening, aggregate, reentry, spacetrack, spaceweather, backup, runner, scheduler, sources
 orbitwatch/physics/  collision (Foster Pc), maneuver (CW + SLSQP), ground (passes), spaceweather (NOAA)
 orbitwatch/agent/    tools (deterministic) and orchestrator (Groq tool-calling loop, guardrails, fallback)
-orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, visual, reports, admin, landing, agent, live, demo
-frontend/            index.html, css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, shortcuts, diagrams, plain, agent-panel, live, drawers (+ glossary), tour, views/*)
+orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, push, visual, reports, admin, landing, agent, live, demo, database
+frontend/            index.html, sw.js (push service worker), css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, shortcuts, diagrams, plain, logic, svg-export, db-views, er-diagram, agent-panel, live, drawers (+ glossary), tour, views/*)
 tests/               pytest suite
 manage.py, ow.cmd    command line
 ```

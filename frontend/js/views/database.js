@@ -4,7 +4,8 @@
 import { get } from '../api.js';
 import { bytes, drawDomains, drawFlow, drawSpotlight, drawTreemap, GROUPS, groupOf } from '../db-views.js';
 import { drawEr } from '../er-diagram.js';
-import { countUpIn, empty, errorBox, esc, fmt, h, loading } from '../ui.js';
+import { exportPng, exportSvg } from '../svg-export.js';
+import { countUpIn, empty, errorBox, esc, fmt, h, loading, toast } from '../ui.js';
 
 const VIEWS = [
   ['er', 'ER diagram', 'The conceptual design: entities, relationships and cardinality (1, N, M), with the live row count of each entity. Click an entity to see its attributes and its table.'],
@@ -24,7 +25,7 @@ export async function render(root) {
   box.appendChild(h(loading('Reading the schema')));
   let data;
   try { data = await get('/database'); } catch (err) { box.innerHTML = ''; box.appendChild(h(errorBox(err))); return undefined; }
-  if (!root.isConnected) return undefined;
+  if (!box.isConnected) return undefined;      // left while the schema loaded
   box.innerHTML = '';
   const { mysql, mongo } = data;
   const tables = mysql.tables.map((t) => ({ ...t, group: groupOf(t.name) }));
@@ -44,7 +45,10 @@ export async function render(root) {
   const layout = h(`<div class="dbv-grid">
     <section class="card bezel" aria-label="Database maps"><div class="card-head"><h2>Database map</h2>
       <div class="dbv-tabs" role="tablist" aria-label="Map view" id="dbTabs">
-        ${VIEWS.map(([id, label], i) => `<button type="button" role="tab" data-v="${id}" aria-selected="${i === 0}">${label}</button>`).join('')}</div></div>
+        ${VIEWS.map(([id, label], i) => `<button type="button" role="tab" data-v="${id}" aria-selected="${i === 0}">${label}</button>`).join('')}</div>
+      <div class="row dbv-export" role="group" aria-label="Save this map"><span class="small muted">Save</span>
+        <button type="button" class="btn sm" data-exp="svg" title="Save this map as a vector image (SVG)">SVG</button>
+        <button type="button" class="btn sm" data-exp="png" title="Save this map as a picture (PNG, 2× size)">PNG</button></div></div>
       <p class="dbv-sub" id="dbSub"></p>
       <div class="dbv-legend" id="dbOpts"></div><div id="dbMap" class="dbv-map"></div></section>
     <aside class="card" id="dbDetail" aria-live="polite"></aside>
@@ -90,6 +94,17 @@ export async function render(root) {
     else if (b.dataset.hops) state.hops = Number(b.dataset.hops);
     else if (b.dataset.metric) state.metric = b.dataset.metric;
     paint();
+  });
+  layout.querySelector('.dbv-export').addEventListener('click', async (e) => {
+    const kind = e.target.closest('[data-exp]')?.dataset.exp;
+    const svg = layout.querySelector('#dbMap svg');
+    if (!kind || !svg) return;
+    const name = `orbitwatch-${state.view === 'er' ? 'er-diagram' : `database-${state.view}`}`;
+    try {
+      if (kind === 'svg') await exportSvg(svg, name);
+      else await exportPng(svg, name);
+      toast(`Saved ${name}.${kind}`);
+    } catch (err) { toast(err.message, 'error'); }
   });
   layout.querySelector('#dbTabs').addEventListener('click', (e) => {
     const v = e.target.closest('[data-v]')?.dataset.v;

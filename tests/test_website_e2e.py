@@ -255,11 +255,47 @@ def test_tc21_login_logout_and_wrong_password(site):
     assert c.get("/api/auth/me").json["user"] is None
 
 
+def try_login(site, email, password, ip):
+    """A login as the browser does it: when the server asks for the proof-of-work challenge, solve it and resend."""
+    from orbitwatch import challenge
+    c = site["app"].test_client()
+    env = {"REMOTE_ADDR": ip}
+    r = c.post("/api/auth/login", json={"email": email, "password": password}, headers=H, environ_base=env)
+    if r.status_code == 401 and (r.json or {}).get("challenge"):
+        r = c.post("/api/auth/login", json={"email": email, "password": password,
+                                            "challenge": challenge.solve(r.json["challenge"])}, headers=H, environ_base=env)
+    return r
+
+
 def test_tc22_brute_force_throttle(site):
-    c = client(site)
-    email = f"throttle-{secrets.token_hex(3)}@example.test"
-    codes = [c.post("/api/auth/login", json={"email": email, "password": "nope-nope"}, headers=H).status_code for _ in range(9)]
-    assert codes[:8] == [401] * 8 and codes[8] == 429
+    from orbitwatch import ratelimit
+    email, ip = f"throttle-{secrets.token_hex(3)}@example.test", f"192.0.2.{secrets.randbelow(250) + 1}"
+    try:
+        codes = [try_login(site, email, "nope-nope", ip).status_code for _ in range(9)]
+        assert codes[:8] == [401] * 8 and codes[8] == 429
+    finally:
+        ratelimit.clear("login_ip", ip)
+        ratelimit.clear("login_email", email)
+        ratelimit.clear("login", f"{email}|{ip}")
+
+
+def test_tc22b_throttle_per_address_and_per_account(site):
+    """One password sprayed across many accounts (per address), and one account attacked from many addresses."""
+    from orbitwatch import ratelimit
+    tag = secrets.token_hex(3)
+    spray_ip, victim = f"198.51.100.{secrets.randbelow(250) + 1}", f"victim-{tag}@example.test"
+    try:
+        sprayed = [try_login(site, f"spray{i}-{tag}@example.test", "Summer2026!", spray_ip).status_code for i in range(31)]
+        assert sprayed[:30] == [401] * 30 and sprayed[30] == 429             # every e-mail new, the address is caught
+        many = [try_login(site, victim, "guess-guess", f"203.0.113.{i + 1}").status_code for i in range(21)]
+        assert many[:20] == [401] * 20 and many[20] == 429                   # every address new, the account is caught
+    finally:
+        ratelimit.clear("login_ip", spray_ip)
+        ratelimit.clear("login_email", victim)
+        for i in range(21):
+            ratelimit.clear("login", f"{victim}|203.0.113.{i + 1}")
+            ratelimit.clear("login_ip", f"203.0.113.{i + 1}")
+        site["db"].execute("admin", "DELETE FROM rate_limit_event WHERE bucket LIKE %s", (f"login:spray%-{tag}@%",))
 
 
 def test_tc23_csrf_header_is_required(viewer):

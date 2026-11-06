@@ -514,6 +514,10 @@ BEGIN
 END$$
 DELIMITER ;
 
+-- Push notifications: the lowest risk level a user wants on their devices (see push_subscription below).
+CALL ow_add_column('notification_pref', 'push_min_risk',
+                   'ENUM(''LOW'',''MEDIUM'',''HIGH'',''CRITICAL'') NOT NULL DEFAULT ''HIGH''');
+
 DROP PROCEDURE ow_add_column;
 DROP PROCEDURE ow_add_index;
 DROP PROCEDURE ow_add_fk;
@@ -576,3 +580,59 @@ CREATE OR REPLACE VIEW v_maneuver_decision AS
 SELECT d.*, u.name AS decided_by_name
   FROM maneuver_decision d LEFT JOIN app_user u ON u.user_id = d.decided_by;
 GRANT SELECT ON orbitwatch.v_maneuver_decision TO r_analyst;
+
+-- ---------------------------------------------------------------------
+-- Push notifications (Web Push): one row per browser a user turned notifications on in. The endpoint is a capability
+-- URL on the browser's push service, so only the auth and jobs accounts may read it (never the public viewer account).
+-- push_delivery makes sending idempotent: one row per alert and device; 'pending' rows are retried (3 attempts).
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS push_subscription (
+    subscription_id  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id          INT UNSIGNED    NOT NULL,
+    endpoint         VARCHAR(1000)   NOT NULL,
+    endpoint_hash    CHAR(64)        NOT NULL COMMENT 'SHA-256 of endpoint: lets a browser recognise itself',
+    p256dh           VARCHAR(200)    NOT NULL,
+    auth_secret      VARCHAR(64)     NOT NULL,
+    user_agent       VARCHAR(200)    NULL,
+    created_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    last_success_at  DATETIME(3)     NULL,
+    last_failure_at  DATETIME(3)     NULL,
+    last_error       VARCHAR(300)    NULL,
+    PRIMARY KEY (subscription_id),
+    UNIQUE KEY uq_push_endpoint (endpoint_hash),
+    KEY ix_push_user (user_id),
+    CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES app_user (user_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS push_delivery (
+    delivery_id      BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+    alert_id         BIGINT UNSIGNED  NOT NULL,
+    subscription_id  BIGINT UNSIGNED  NOT NULL,
+    status           ENUM('pending','sent','failed') NOT NULL DEFAULT 'pending',
+    attempts         TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    last_error       VARCHAR(300)     NULL,
+    created_at       DATETIME(3)      NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    sent_at          DATETIME(3)      NULL,
+    PRIMARY KEY (delivery_id),
+    UNIQUE KEY uq_push_delivery (alert_id, subscription_id),
+    KEY ix_push_delivery_due (status, created_at),
+    CONSTRAINT fk_push_delivery_alert  FOREIGN KEY (alert_id) REFERENCES alert (alert_id) ON DELETE CASCADE,
+    CONSTRAINT fk_push_delivery_device FOREIGN KEY (subscription_id)
+        REFERENCES push_subscription (subscription_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON orbitwatch.push_subscription TO r_auth;
+GRANT INSERT, UPDATE, DELETE         ON orbitwatch.push_subscription TO r_jobs;
+GRANT INSERT, UPDATE                 ON orbitwatch.push_delivery     TO r_jobs;
+
+-- Security notices (repeated failed logins on an account) go through the same outbox.
+ALTER TABLE email_outbox MODIFY kind
+    ENUM('alert','password_reset','password_changed','decision','test','security') NOT NULL;
+
+-- The stale-data notice: after how many hours without a successful download or screening the site says so, and the
+-- one fact about job history the public may see (job_run itself holds error details for administrators).
+INSERT IGNORE INTO system_config (config_key, config_value, description) VALUES
+    ('stale_data_hours', '8', 'Warn on every page that data is out of date after this many hours without a successful download or screening');
+CREATE OR REPLACE VIEW v_screening_freshness AS
+SELECT MAX(finished_at) AS last_screening_at FROM job_run WHERE job_name = 'screening' AND status = 'success';
+GRANT SELECT ON orbitwatch.v_screening_freshness TO r_viewer;

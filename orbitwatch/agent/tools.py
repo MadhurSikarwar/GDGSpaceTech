@@ -120,7 +120,7 @@ class AgentTools:
                       "activity": row["activity"], "drag_scalar": float(row["drag_scalar"]), "source": row["source"],
                       "observed_at": row["observed_at"].isoformat() + "Z", "live": bool(row["live"])}
             else:
-                live = spaceweather.fetch()
+                live = spaceweather.cached_fetch()      # shared with the web chip: NOAA once per 10 min
                 sw = {**live, "observed_at": live["observed_at"].isoformat() + "Z"}
             sw["summary"] = (f"Kp {sw['kp']:.1f} ({sw['activity'].lower()}), F10.7 {sw['f107']:.0f} sfu; "
                              f"in-track uncertainty growth x{sw['drag_scalar']:.2f}")

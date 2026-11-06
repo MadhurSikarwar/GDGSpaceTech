@@ -6,6 +6,7 @@
 //   * select any object to see its orbit and provenance, follow it with the camera;
 //   * replay any close approach (real or synthetic) around its TCA, and replay an approved or
 //     recommended avoidance burn: nominal versus post-burn orbit (SIMULATED), with the burn and both TCAs.
+import { exportCanvasPng } from '../svg-export.js';
 import { get } from '../api.js';
 import { term } from '../drawers.js';
 import { EncounterReplay, glowCanvas } from '../encounter.js';
@@ -37,7 +38,8 @@ export async function render(root, { app }) {
       <div class="sect"><h3><span>Map</span><span id="mapNow" class="count">Original</span></h3>
         <div class="chips" id="baseMaps" role="group" aria-label="Base map">${BASEMAPS.map(([id, label]) => `<button class="chip" data-map="${id}" aria-pressed="${id === 'original'}" title="${{ original: 'The globe as it always looked: satellite imagery by day, city lights and the real day/night line', hd: 'High-resolution satellite imagery (Esri), sharper when zoomed in, needs an internet connection', streets: 'Street map (Esri), needs an internet connection', dark: 'Dark grey map (Esri), keeps the satellite points easy to see', natural: 'Natural Earth, bundled with the page, works offline' }[id]}">${label}</button>`).join('')}</div>
         <div class="chips" id="mapMode" role="group" aria-label="Globe or flat map" style="margin-top:6px"><button class="chip" data-mode="3d" aria-pressed="true">3D globe</button><button class="chip" data-mode="2d" aria-pressed="false">2D map</button></div>
-        <button class="btn sm" id="mapReset" style="margin-top:8px" title="Original base map and the 3D globe">↺ Reset to original globe</button></div>
+        <div class="row" style="margin-top:8px;gap:6px"><button class="btn sm" id="mapReset" title="Original base map and the 3D globe">↺ Reset to original globe</button>
+          <button class="btn sm" id="snap" title="Save what the globe shows now as a picture (PNG)">Save picture</button></div></div>
       <div class="sect globe-hot" id="hot"></div>
     </div>
     <div class="globe-panel globe-info hidden" id="info" aria-live="polite"></div>
@@ -79,7 +81,7 @@ export async function render(root, { app }) {
 
   let C;
   try { C = await loadCesium(); } catch (err) { status.textContent = err.message; return undefined; }
-  if (!root.isConnected) return undefined;
+  if (!status.isConnected) return undefined;   // left while the engine loaded
 
   const viewer = createViewer(C, $('#cesium'), { interactive: true, creditContainer: root.querySelector('#credits') });
   viewer.camera.setView({ destination: indiaView(C, 24_000_000) });
@@ -325,6 +327,7 @@ export async function render(root, { app }) {
   get('/visual/names').then((r) => {
     names = new Map(r.ids.map((id, i) => [id, r.names[i]]));
     const box = $('#globeSearch');
+    if (!box) return;                     // the globe was left before the names arrived
     box.disabled = false;
     box.addEventListener('input', () => {
       const s = box.value.trim().toUpperCase();
@@ -486,6 +489,16 @@ export async function render(root, { app }) {
     if (mode) { stopFollow(); viewer.setMapMode(mode); }
   });
   $('#mapReset').addEventListener('click', () => { viewer.setBaseMap('original'); viewer.setMapMode('3d'); paintMap(); });
+  // A picture of the globe as it is now: render one frame and copy it at once (WebGL clears the buffer afterwards).
+  $('#snap').addEventListener('click', async () => {
+    try {
+      viewer.render();
+      await exportCanvasPng(viewer.scene.canvas, `orbitwatch-globe-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`);
+      toast('Picture saved');
+    } catch (err) {
+      toast(err.name === 'SecurityError' ? 'This base map does not allow saving pictures: switch to Original or Natural Earth' : err.message, 'error');
+    }
+  });
   const unMorph = [viewer.scene.morphComplete.addEventListener(paintMap)];
   paintMap();
 

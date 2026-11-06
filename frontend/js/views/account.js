@@ -1,6 +1,8 @@
 // Account: notification preferences and password change.
-import { get, post, put } from '../api.js';
-import { errorBox, esc, h, hashQuery, loading, toast } from '../ui.js';
+import { del, get, post, put } from '../api.js';
+import { deviceAlerts } from '../app.js';
+import { deviceName } from '../logic.js';
+import { errorBox, esc, fmt, h, hashQuery, loading, toast } from '../ui.js';
 
 const RISKS = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
@@ -10,6 +12,7 @@ export async function render(root, { app }) {
     <p><span class="mono">${esc(app.user.email)}</span> · ${esc(app.user.role_label)}</p></div></div>`));
   const grid = h(`<div class="acct-grid">
     <section class="card bezel" id="notif"><div class="card-head"><h2>Notifications</h2><span class="sub">close-approach alerts</span></div>${loading()}</section>
+    <section class="card" id="devices"><div class="card-head"><h2>Notifications on your devices</h2><span class="sub">push · this browser</span></div>${loading()}</section>
     <section class="card" id="pw"><div class="card-head"><h2>Change password</h2><span class="sub">signs out your other sessions</span></div>
       <form class="stack" autocomplete="on" novalidate>
         <input type="email" name="username" autocomplete="username" value="${esc(app.user.email)}" hidden>
@@ -60,6 +63,8 @@ export async function render(root, { app }) {
     });
   } catch (err) { notif.innerHTML = errorBox(err); }
 
+  paintDevices(grid.querySelector('#devices'));
+
   // ---- password -------------------------------------------------------------
   const form = grid.querySelector('#pw form');
   form.addEventListener('submit', async (e) => {
@@ -77,4 +82,69 @@ export async function render(root, { app }) {
       toast(r.message || 'Password changed');
     } catch (ex) { err.textContent = ex.message; } finally { btn.disabled = false; }
   });
+}
+
+// ---- notifications on this and other devices (Web Push, or in-tab where push is unavailable) --------------------------
+async function paintDevices(card) {
+  const head = '<div class="card-head"><h2>Notifications on your devices</h2><span class="sub">push · this browser</span></div>';
+  let d;
+  try { d = await get('/me/push'); } catch (err) { card.innerHTML = head + errorBox(err); return; }
+  if (!card.isConnected) return;
+  const mode = deviceAlerts.mode();
+  const mine = await deviceAlerts.thisDeviceHash();
+  const blocked = deviceAlerts.permission() === 'denied';
+  const status = !deviceAlerts.supported() ? 'This browser cannot show notifications.'
+    : blocked ? 'Notifications are blocked for this site. Allow them in the browser site settings, then reload this page.'
+      : mode === 'push' ? '<strong>On for this browser.</strong> Alerts arrive even when OrbitWatch is closed.'
+        : mode === 'tab' ? `<strong>On for this browser while an OrbitWatch tab is open.</strong> ${esc(deviceAlerts.fallbackReason() || 'Background push is not available here.')}
+            Background push needs http://localhost, or HTTPS with a certificate the browser trusts, and a browser with a push service.`
+          : 'Off for this browser.';
+  const rows = d.devices.map((v) => `<tr><td>${esc(deviceName(v.user_agent || ''))}${v.endpoint_hash === mine ? ' <span class="tag accent">this browser</span>' : ''}
+      <div class="small muted">added ${esc(fmt.rel(v.created_at))}</div></td>
+    <td>${v.last_success_at ? esc(fmt.rel(v.last_success_at)) : '<span class="muted">not yet</span>'}</td>
+    <td>${v.last_error && (!v.last_success_at || v.last_failure_at > v.last_success_at)
+      ? `<span class="status-bad small">${esc(v.last_error)}</span><div class="small muted">${esc(fmt.rel(v.last_failure_at))}</div>` : '<span class="muted">—</span>'}</td>
+    <td><button class="btn sm ghost" type="button" data-remove="${v.subscription_id}">Remove</button></td></tr>`).join('');
+  card.innerHTML = `${head}<div class="stack">
+    <p class="small" style="margin:0" aria-live="polite">${status}</p>
+    <label class="field"><span>Notify me for risk level and above</span><select name="level">
+      ${d.risk_levels.map((r) => `<option ${d.min_risk_level === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
+    <div class="row">
+      ${mode ? '<button class="btn" type="button" data-act="off">Turn off for this browser</button>'
+        : `<button class="btn primary" type="button" data-act="on" ${blocked || !deviceAlerts.supported() ? 'disabled' : ''}>Turn on for this browser</button>`}
+      ${d.devices.length ? '<button class="btn" type="button" data-act="test">Send a test notification</button>' : ''}</div>
+    <div class="form-ok" aria-live="polite"></div>
+    ${d.devices.length ? `<div class="table-wrap"><table class="data devices"><thead><tr><th>Device</th><th>Last delivered</th><th>Last problem</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : '<p class="small muted" style="margin:0">No device receives push notifications yet.</p>'}</div>`;
+  const say = (text) => { card.querySelector('.form-ok').textContent = text; };
+  card.querySelector('select[name=level]').addEventListener('change', async (e) => {
+    try {
+      await put('/me/push', { min_risk_level: e.target.value });
+      deviceAlerts.setMinLevel(e.target.value);
+      say(`Saved: ${e.target.value} and above.`);
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  card.onclick = async (e) => {           // replaced on every repaint, so handlers never pile up
+    const b = e.target.closest('button');
+    if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.act === 'on') {
+        const r = await deviceAlerts.enable(d.public_key, card.querySelector('select[name=level]').value);
+        toast(r.mode === 'push' ? 'Push notifications on for this browser' : r.mode === 'tab' ? 'Notifications on while OrbitWatch is open' : r.reason,
+          r.mode ? 'info' : 'error');
+      } else if (b.dataset.act === 'off') {
+        await deviceAlerts.disable();
+        toast('Notifications off for this browser');
+      } else if (b.dataset.act === 'test') {
+        const r = await post('/me/push/test');
+        toast(r.message);
+      } else if (b.dataset.remove) {
+        await del(`/me/push/subscriptions/${b.dataset.remove}`);
+        toast('Device removed');
+      }
+    } catch (err) { toast(err.message, 'error'); }
+    paintDevices(card);
+  };
 }

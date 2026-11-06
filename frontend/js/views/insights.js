@@ -13,7 +13,7 @@ export async function render(root, { app }) {
   box.appendChild(h(loading('Loading')));
   let data;
   try { data = await get('/landing'); } catch (err) { box.innerHTML = ''; box.appendChild(h(errorBox(err.message))); return undefined; }
-  if (!root.isConnected) return undefined;
+  if (!box.isConnected) return undefined;      // left while the data loaded
   box.innerHTML = template();
   fillSpectrum(box, data);
   fillPipeline(box, data);
