@@ -21,3 +21,7 @@
 *.gif  binary
 *.ico  binary
 *.db   binary
+
+# Windows batch files must keep CRLF: cmd mis-reads labels (goto) in LF files
+*.bat  text eol=crlf
+*.cmd  text eol=crlf

@@ -393,6 +393,13 @@ Runtime files live in `%USERPROFILE%\orbitwatch-runtime` (Python venv, MongoDB b
 backups, certificate, models). They are kept outside the repository so OneDrive never syncs live
 database files.
 
+**The short way:** install MySQL Server 8.4 (as a Windows service) and Python 3.12, unpack the MongoDB 8.0 zip into
+`%USERPROFILE%\orbitwatch-runtime\mongodb\`, then double-click **`start-website.bat`**. On the first start it creates
+the Python environment, installs the packages, creates `.env`, asks for the MySQL root password, runs the first-time
+setup (10 to 30 minutes, needs the internet) and asks for your administrator account; every later start installs new
+packages and applies database updates when they changed, then starts the site. `set ORBITWATCH_CHECK_ONLY=1` before
+running it checks and prepares everything without starting the site. The numbered steps below are the same thing by hand.
+
 `ow` is the launcher `ow.cmd` in the project folder. In Command Prompt run `ow ...`; in PowerShell run
 `.\ow ...` (PowerShell does not run commands from the current folder by name), or add the project folder to `PATH`.
 
@@ -425,7 +432,8 @@ database files.
    accept the self-signed certificate (or set `ORBITWATCH_TLS_CERT` / `ORBITWATCH_TLS_KEY`).
    `ow serve --http --port 5050` serves plain HTTP for development.
 
-**Updating an existing installation:** after pulling new code, run `ow mysql-setup` once. It re-applies the
+**Updating an existing installation:** `start-website.bat` does this itself (`ow prepare`). By hand, after pulling new
+code, run `pip install -r requirements.txt` in the venv and `ow prepare` (or `ow mysql-setup`) once. It re-applies the
 migrations (new tables, columns, views and grants) and keeps every row; nothing is dropped.
 
 Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|scheduler|all`, `ow ingest`, `ow screen`, `ow assess EVENT_ID`, `ow space-weather`, `ow aggregate`, `ow load-catalog`, `ow backup`,

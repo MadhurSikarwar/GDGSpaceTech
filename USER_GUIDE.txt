@@ -1,0 +1,265 @@
+ORBITWATCH - USER GUIDE
+Satellite and space-debris tracking with close-approach alerts
+==============================================================================
+
+Open the website at  https://localhost:8443  (start it with start-website.bat).
+The first time, the browser warns about the local certificate: choose
+Advanced, then Continue to localhost.
+
+Demo logins (password pass1234 for all three; details in pass.txt):
+  demo-admin@orbitwatch.test     Administrator
+  demo-analyst@orbitwatch.test   Analyst
+  demo-viewer@orbitwatch.test    Public Viewer
+
+There are four levels. Each one can do everything the level above it can,
+plus its own features:
+
+  1. VISITOR        not logged in
+  2. PUBLIC VIEWER  any registered account (new accounts start here)
+  3. ANALYST        given by an administrator
+  4. ADMINISTRATOR  given by an administrator
+
+The database enforces this too: every level uses its own MySQL account with
+only the rights it needs, so even a bug in the website cannot let a visitor
+read user accounts or a viewer change the catalogue.
+
+
+==============================================================================
+1. VISITOR (NOT LOGGED IN)
+==============================================================================
+
+HOME PAGE
+  - A live 3D globe of every tracked object, with the story of the project
+    told in four chapters as you scroll.
+  - Live counts: objects tracked, close approaches this week.
+
+LIVE GLOBE  (menu: Globe)
+  - Every object in Earth orbit as a moving point, positions from SGP4.
+  - Search any object by name or NORAD number; click a point for its details,
+    its orbit and its next pass.
+  - Filters: object type (payload, rocket body, debris), orbital regime
+    (LEO, MEO, GEO ...).
+  - Layers: close approaches (by risk level), synthetic demo objects, ground
+    stations, orbit shells.
+  - Maps: original globe, high-resolution imagery, streets, dark, Natural
+    Earth (offline); 3D globe or flat 2D map.
+  - Time scrubber: move time forward or back and watch the sky change.
+  - Replays: watch a close approach, or a simulated avoidance burn, in 3D.
+  - Save picture: saves what the globe shows as a PNG.
+
+MISSION DASHBOARD  (menu: Dashboard)
+  - Catalogue totals, objects per orbital region (chart), space weather
+    (NOAA Kp, F10.7), data freshness, re-entry predictions.
+  - Threat radar of the next 72 hours and a countdown to each close approach.
+  - The latest AI assessments and system health (scheduler, data sources).
+  - "Save image" on the chart and the radar.
+
+CATALOGUE  (menu: Catalogue)
+  - Every catalogued object (over 70,000, about 33,000 in orbit), with
+    search, filters (type, status, country, owner, orbital region, with or
+    without a current orbit) and sorting.
+  - Object page: owner, launch, mission, current orbit drawn to scale,
+    ground-station passes, its close approaches.
+
+CLOSE APPROACHES  (menu: Close approaches)
+  - Every predicted close approach: time of closest approach (TCA), miss
+    distance, relative velocity, risk level, probability of collision.
+  - Filters: object name, NORAD number, risk level, date range, time windows;
+    sort by time or by closest miss.
+  - Detail of each event with a 3D replay, and the AI decision support:
+    read every assessment, its plain-words explanation, the burn options and
+    the full agent trace.
+  - Compare two AI assessments side by side and print the comparison.
+
+DEMO LAB  (menu: Demo lab)
+  - See synthetic-debris scenarios (clearly labelled SYNTHETIC) and their
+    AI assessments.
+
+DATABASE  (menu: Database)
+  - The database design: ER diagram, table ring, domains, spotlight,
+    treemap and data-flow views, with live row counts.
+  - Every table's columns and links; the MongoDB collections.
+  - Save any map as SVG or PNG.
+
+HOW IT WORKS  (footer / menu: How it works)
+  - The altitude spectrum, the data pipeline and the largest fragmentation
+    events, all from live data.
+
+ALWAYS AVAILABLE
+  - Search: Ctrl+K or "/" finds objects, pages and glossary terms.
+  - Keyboard shortcuts: "?" lists them; "g" then a letter jumps to a page
+    (g h home, g g globe, g d dashboard, g c catalogue, g a close
+    approaches, g l demo lab, g i how it works).
+  - Event log drawer: what OrbitWatch is doing, live (public events).
+  - Glossary (help button): every technical term explained; dotted labels
+    anywhere open it at that term.
+  - Guided tour: a one-minute tour of the interface.
+  - System status (top bar): live updates, data freshness, scheduler, space
+    weather, Space-Track and e-mail state.
+  - A notice at the bottom left when the orbital data is out of date.
+  - Create account (top right).
+
+
+==============================================================================
+2. PUBLIC VIEWER (ANY LOGGED-IN ACCOUNT)
+==============================================================================
+
+Everything a visitor can do, plus:
+
+FOLLOW SATELLITES
+  - "Subscribe to alerts" on any object's page, or type a NORAD number or a
+    name on My watchlist / My alerts.
+
+MY WATCHLIST  (menu: Watchlist)
+  - Every satellite you follow with a risk timeline of its close
+    approaches, from 3, 7 or 14 days back to as far ahead.
+  - Dot colour and size = risk; nearby approaches are grouped into one dot
+    with a count. Click a dot to open the close approach(es).
+  - Totals: approaches ahead, highest risk ahead, closest miss ahead.
+  - Refreshes itself when a new screening finishes. Save the timelines as SVG.
+  - Unfollow from here.
+
+MY ALERTS  (bell icon, menu: My alerts)
+  - An alert for every new close approach of a satellite you follow.
+  - Unacknowledged / all; acknowledge one or all; open each in 3D.
+  - The bell shows how many are unacknowledged.
+  - Your subscriptions, with the next approach of each.
+
+MY ACCOUNT  (click your name -> Account)
+  - E-mail alerts on or off, and from which risk level (LOW, MEDIUM, HIGH,
+    CRITICAL).
+  - Notifications on your devices:
+      * Turn on for this browser: a pop-up for each new alert at or above
+        your chosen risk level, even with OrbitWatch closed (on
+        http://localhost or with a trusted certificate; otherwise while an
+        OrbitWatch tab is open).
+      * The list of your devices with their last delivery and last problem;
+        remove any of them.
+      * Send a test notification.
+  - Change your password (signs out your other sessions).
+  - Forgot password: a reset link by e-mail (expires in 30 minutes).
+  - Logging out also turns notifications off for that browser.
+
+
+==============================================================================
+3. ANALYST
+==============================================================================
+
+Everything a Public Viewer can do, plus:
+
+OBJECT PAGES
+  - Altitude history: how the object's orbit has changed (from the MongoDB
+    orbit history), with a date range.
+
+REPORTS  (menu: Reports)
+  - Objects per orbital region, debris by country, re-entries per year,
+    region x year, altitude and decay rate of one object, monthly altitude,
+    fastest-decaying objects, re-entry predictions.
+  - "Export CSV" on every report; "Save image" on every chart.
+
+EXPORTS
+  - CSV of catalogue searches and of close-approach lists.
+  - Assessment comparison as CSV or as a PDF file.
+
+AI DECISION SUPPORT  (on a close approach, or in the demo lab)
+  - Run AI assessment: the agent checks the encounter (SGP4, probability of
+    collision, space weather, ground stations), generates and checks
+    avoidance burns, and recommends MONITOR, MANOEUVRE RECOMMENDED,
+    NO FEASIBLE MANOEUVRE or DATA UNAVAILABLE.
+  - Approve a recommended burn (executed in SIMULATION only: OrbitWatch has
+    no command uplink) and watch it on the globe.
+  - Reject it with a reason, optionally asking the agent to re-plan with your
+    feedback and a minimum miss distance.
+  - Compare any two assessments: summary, burn options, agent traces.
+
+DEMO LAB
+  - Create a guaranteed close approach with synthetic debris against any
+    low-orbit satellite (choose the time, miss distance and crossing angle).
+  - Run the AI on it; clear one scenario or all of them.
+
+MORE
+  - Optional e-mail when a manoeuvre is approved or rejected (Account page).
+  - The event log shows analyst-level events too.
+
+
+==============================================================================
+4. ADMINISTRATOR
+==============================================================================
+
+Everything an Analyst can do, plus the Administration page (menu: Admin):
+
+SYSTEM
+  - Scheduler state and heartbeat, data sources and their freshness, the
+    e-mail queue, the latest reconciliation report.
+  - Send yourself a test e-mail (also on the Account page).
+
+USERS & ROLES
+  - Search users; create accounts with any role.
+  - Change a user's role (Public Viewer / Analyst / Administrator).
+  - Deactivate / reactivate or delete accounts.
+    (You cannot demote, deactivate or delete yourself.)
+
+REFERENCE DATA
+  - Add, edit and delete countries, organisations, launch sites, launch
+    vehicles, missions and orbital regions.
+
+WATCHLIST
+  - The satellites the screening job checks for close approaches: add or
+    remove satellites.
+
+CONFIGURATION
+  - Screening threshold (km), horizon, step and maximum element-set age;
+    how often data is downloaded; the catalogue, aggregation, re-entry,
+    Space-Track and backup schedules; how many backups to keep; after how
+    many hours the "data out of date" notice appears.
+
+JOBS
+  - Every background job with its last run and result; "Run now" starts one
+    (catalogue, ingest, screening, aggregation, re-entry model, backup,
+    space weather, e-mail, housekeeping, reconciliation ...).
+
+LOGS
+  - Download logs (what was fetched from CelesTrak and Space-Track) and the
+    server log files.
+
+DATABASE CLUSTER
+  - The MongoDB cluster: every replica-set member and whether it is primary
+    or secondary, the shards and how the orbit history is spread over them.
+
+MORE
+  - Database error details (table and column names) are shown to
+    administrators only.
+  - The event log shows administrator events (logins under attack, password
+    resets, e-mail failures ...).
+  - Repeated failed logins on any account are recorded; the owner is
+    e-mailed.
+
+
+==============================================================================
+SECURITY FEATURES EVERYONE BENEFITS FROM
+==============================================================================
+
+  - Passwords are stored as bcrypt hashes; a password change signs out every
+    other session.
+  - After 3 wrong passwords on an account (or 5 from one address) the
+    browser must pass a short automatic "not a robot" check (about a second,
+    nothing to type).
+  - Too many failures lock out new browsers for a while; a browser you have
+    logged in from before still gets in.
+  - After 10 failures the account owner gets a warning e-mail.
+  - All state-changing requests need a special header (CSRF protection);
+    cookies are HttpOnly and SameSite=Strict.
+
+
+==============================================================================
+COMMAND LINE (for whoever runs the server)
+==============================================================================
+
+  start-website.bat     start everything (also sets up a new computer)
+  ow prepare            apply database updates after pulling new code
+  ow mongo-start / ow mongo-stop / ow mongo-status
+  ow service            website + scheduler
+  ow serve --http --port 5050   plain HTTP for development
+  ow create-admin       create an administrator account
+  ow ingest / ow screen / ow backup / ow assess EVENT_ID
+  See README.md for the full list, ENV_SETUP.md for the settings.

@@ -142,3 +142,6 @@ TILL_NOW.md
 .playwright-mcp/
 # Backups of .env (they hold the same secrets)
 .env.bak*
+
+# Personal password list (local only, never pushed)
+pass.txt
