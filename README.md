@@ -6,10 +6,6 @@ RV College of Engineering, Department of Information Science and Engineering ·
 Database Management Systems (CD252IA)
 Team: 1RV24IS067 Madhur Rishi Sikarwar · 1RV24IS069 Mayur M Deekshith
 
-▶️ **[Watch the demo video on YouTube](https://www.youtube.com/watch?v=Be4tBh7HUjg)**: a walkthrough of OrbitalGuard's
-orbital tracking, conjunction detection, risk assessment, manoeuvre optimisation, agentic decision pipeline and
-human-in-the-loop approval, all of which carry over into OrbitWatch.
-
 OrbitWatch keeps a catalogue of space objects together with their owners, launches and missions, stores
 the complete history of their orbits, screens a watchlist of satellites for close approaches every few
 hours, alerts users who follow a satellite, and reports on how crowded each orbital region is and how
@@ -20,15 +16,17 @@ and **ground-station contact windows**.
 
 The website opens on a live 3D globe of everything being tracked and tells its story in four short chapters while the
 camera travels with the scroll; the altitude spectrum, the data pipeline and the largest fragmentation events are on
-the How it works page, all from live data.
+the How it works page, all from live data. Zooming out from the globe, the **Solar system** page shows the Sun, the eight
+planets and the Moon where they really are, with time running at up to a year per second and the Earth's tracked
+satellites around it.
 
 | Layer | Technology |
 |---|---|
 | Relational database | **MySQL 8.4**: catalogue, latest orbit of each object, conjunction events, users, subscriptions, alerts, summaries |
 | NoSQL database | **MongoDB 8.0**: append-only orbital history, raw catalogue records, download logs. Sharded on `norad_id`; every shard is a replica set |
 | Backend | **Python 3.12 + Flask** REST API; **SGP4** orbit propagation; **APScheduler** jobs; **scikit-learn** re-entry model |
-| Front end | HTML, CSS and JavaScript (ES modules); **CesiumJS** 3D globe; Chart.js |
-| Data | **CelesTrak** element sets and SATCAT; **GCAT** for launches, vehicles, sites, organisations, parents and programmes; **Space-Track.org** for older history; **NOAA SWPC** space weather |
+| Front end | HTML, CSS and JavaScript (ES modules); **CesiumJS** 3D globe; **three.js** for the Solar system page (loaded only when it opens); Chart.js |
+| Data | **CelesTrak** element sets and SATCAT; **GCAT** for launches, vehicles, sites, organisations, parents and programmes; **Space-Track.org** for older history; **NOAA SWPC** space weather; **JPL** orbital elements for the planets |
 | AI | **Groq** LLM with native tool calling (default `openai/gpt-oss-120b`), deterministic tools and guardrails; runs without an API key in deterministic mode |
 
 ---
@@ -332,8 +330,49 @@ counts come from requests of their own (`/api/objects/facets`, `/api/conjunction
 which has a ceiling), so the table never waits for a GROUP BY over every row. The demo lab draws an **encounter preview**
 that follows the form (miss distance, crossing angle, lead time) before anything is created; the login and register pages
 show the live catalogue size and the countdown to the next close approach. **?** lists the keyboard shortcuts (**g** then
-**h g d c a l i** goes to a page) and an unknown address shows a 404 page. The public pages pass axe-core with no violations,
+**h g d c a l i s** goes to a page) and an unknown address shows a 404 page. The public pages pass axe-core with no violations,
 text meets WCAG AA contrast, closed drawers and menus are `inert`, and the keyboard returns to the button that opened them.
+
+**Clouds on the globe.** The globe's layer panel has a *Clouds (illustrative)* layer: a global cloud composite (Solar System
+Scope, CC BY 4.0, made from NASA imagery) on a shell just above the surface, lit by the real Sun. It is not today's weather,
+and the panel says so. The clouds are white on the day side and dark and thin on the night side, so the city lights show
+through; they drift slowly eastwards (a full turn in four hours), and fade out as the camera comes down (invisible below
+600 km, full above 3,000 km) so they never hide the ground being inspected. They appear only in the 3D view of the Original
+and Natural Earth maps, and the picture is fetched by the page itself (three tries) so that a failed download leaves the
+layer off instead of veiling the globe in white. The Sun's glare is wider and warmer, and the Moon is drawn.
+
+**Solar system.** `#/solar` (the *Solar system* item in the menu, **g** then **s**, the button on the landing page, or
+*Zoom out: the Earth in the Solar system* in the globe's layer panel, which opens it on the Earth at the same moment)
+draws the Sun, the eight planets and the Moon in 3D with three.js (r160, loaded from a CDN only when the page opens, so it
+needs an internet connection and shows a plain message if the engine or 3D graphics are unavailable).
+
+* **Real positions.** Planets come from JPL's *Keplerian Elements for Approximate Positions of the Major Planets*
+  (E. M. Standish, valid 1800-2050) solved with Kepler's equation: well under a degree for the inner planets and about a
+  degree for the outer ones. The Moon comes from the Astronomical Almanac's low-precision series (about 0.3 degrees).
+  Each body is tilted along its real pole and turns at its real rate: the Earth at the real sidereal time with city lights
+  on its night side, sun glint on the oceans, clouds and an atmosphere; Saturn's rings are open at their true angle; the
+  Moon always shows the Earth the same face. Sizes and distances are **not to scale** (distance from the Sun is drawn as its
+  square root, size as a softened power of the true radius, so that no two bodies overlap and the planets are not specks),
+  but every direction is true. The page says so.
+* **Time.** Forwards or backwards at Live, 1 hour, 1 day, 1 week, 1 month or 1 year per second; pause with **Space**; *Now*
+  returns to the present. It stops at the ends of the elements' range.
+* **Bodies.** A click, the *Fly to* row, or **1-9** flies the camera to a body and keeps following it. Its card gives live
+  figures (distance from the Sun and from the Earth, how long light or a signal takes, the Moon's phase) and its diameter,
+  day, year, axial tilt, temperature and a fact. **0** or **Esc** returns to the overview. **+** / **-**, the wheel, a
+  pinch and the zoom buttons (hold to keep zooming) glide to the wanted distance on a log curve, so the motion is the same
+  at 30 or 144 frames a second.
+* **Layers.** Orbits, labels, the asteroid and Kuiper belts (thousands of points, each moving at its own Keplerian speed
+  on the GPU), a glow, and the Satellites.
+* **Satellites around the Earth.** The Earth's card says how many objects OrbitWatch tracks and links to the globe and
+  Close approaches. The first time the camera comes near the Earth, the catalogue (about 1.6 MB, `/api/visual/positions`:
+  SGP4 positions at two instants) is loaded and turned into orbits the graphics card moves at any speed, coloured by object
+  type. Two-body motion plus the Earth's oblateness (J2, which turns each orbital plane at its known rate) is simpler than
+  SGP4: good near today and drifting by degrees a day further out, so the swarm is drawn only within 14 days of now (the
+  card says so, and *Now* brings it back). Heights are squeezed to fit inside the Moon's orbit: the low shell hugs the
+  planet and the outer ring is the geostationary belt.
+* **Care.** The planets are computed in the browser from their orbital elements, not from the satellite data, so the page
+  has no data-freshness notice. A frame-rate governor lowers the quality in four steps on a weak GPU. With
+  `prefers-reduced-motion` the clock starts at real time, camera flights are instant and the Sun's surface stops churning.
 
 **Automatic updates.** `ow scheduler` (or `ow service`) runs, with one-at-a-time locks, retries with
 back-off and every attempt in `job_run`:
@@ -413,7 +452,7 @@ running it checks and prepares everything without starting the site. The numbere
 3. **`.env`:** add `MYSQL_ROOT_PASSWORD=...` (used once, to create the database and accounts).
    Recommended: `SPACETRACK_USERNAME` / `SPACETRACK_PASSWORD` (full orbital coverage, history, re-entry
    training) and `SMTP_USERNAME` / `SMTP_PASSWORD` (e-mail alerts and password reset; see
-   `.env.example`). Optional: `GROQ_API_KEY` for the LLM agent (`GROQ_REASONING_MODEL` picks the model;
+   `.env.example`; `ENV_SETUP.md` explains every setting). Optional: `GROQ_API_KEY` for the LLM agent (`GROQ_REASONING_MODEL` picks the model;
    if Groq has retired it, the agent picks an available one). Everything else is generated.
 4. **First-time setup:** creates the certificate, MySQL schema, roles and accounts, the MongoDB
    cluster, loads the catalogue, ingests orbits and runs a first screening:
@@ -441,6 +480,8 @@ Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|sche
 `ow reentry-train`, `ow reentry-predict`, `ow mongo-status`, `ow mongo-stop`. Add `--cached` to
 `setup`, `load-catalog` or `ingest` to reuse the downloads in the runtime cache.
 
+`USER_GUIDE.txt` describes what each of the four access levels (visitor, public viewer, analyst, administrator) can do.
+
 **Demo ideas**
 * *Privileges in the database:* `mysql -u ow_viewer -p orbitwatch` → `SELECT * FROM app_user;` is refused (ERROR 1142).
 * *Failover:* `mongosh --port 27101` → `db.adminCommand({shutdown: 1})`, then Admin → Database cluster: a secondary is now PRIMARY and the app keeps working. Restart with `ow mongo-start`.
@@ -454,7 +495,10 @@ Other commands: `ow reconcile [--apply]`, `ow verify restore|failover|https|sche
 ```
 The orbit, screening, SQL and catalogue-mapping tests need no database; `tests/test_frontend_files.py` and
 `tests/test_frontend_logic.py` check the stylesheet and scripts and run the pure frontend modules under
-Node.js. `tests/test_catalogue_queries.py` holds the catalogue search to what plain SQL over the view
+Node.js. The Solar system modules are tested there against real oppositions, equinoxes and Moon phases, the zoom
+arithmetic, and satellite orbits recovered from two Earth-fixed snapshots (including the Earth's oblateness drift and a
+geostationary satellite). `tests/test_prepare.py` checks `ow prepare` (first-time detection and database updates) without
+changing any database. `tests/test_catalogue_queries.py` holds the catalogue search to what plain SQL over the view
 returns, tests the facet counts and the read memo; `tests/test_mail_guard.py` that test addresses never reach a real mail server.
 `tests/test_features.py` covers the watchlist, assessment comparison (CSV and PDF), push notifications (each message is
 decrypted with an independent receiver-side implementation of RFC 8291 and the VAPID signature verified), the login
@@ -478,9 +522,11 @@ orbitwatch/jobs/     catalog, ingest, screening, aggregate, reentry, spacetrack,
 orbitwatch/physics/  collision (Foster Pc), maneuver (CW + SLSQP), ground (passes), spaceweather (NOAA)
 orbitwatch/agent/    tools (deterministic) and orchestrator (Groq tool-calling loop, guardrails, fallback)
 orbitwatch/web/      Flask app and blueprints: auth, catalog, conjunctions, me, push, visual, reports, admin, landing, agent, live, demo, database
-frontend/            index.html, sw.js (push service worker), css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, shortcuts, diagrams, plain, logic, svg-export, db-views, er-diagram, agent-panel, live, drawers (+ glossary), tour, views/*)
+frontend/            index.html, sw.js (push service worker), css/app.css, js/ (app, api, ui, time, perf, charts, globe-core, encounter, hud, palette, shortcuts, diagrams, plain, logic, svg-export, db-views, er-diagram, agent-panel, live, drawers (+ glossary), tour, views/*, solar/ (ephemeris, bodies, satellites, zoom, scene)), img/space/ (planet textures and their credits)
 tests/               pytest suite
 manage.py, ow.cmd    command line
+start-website.bat    one double-click: prepare, then run the site
+USER_GUIDE.txt, ENV_SETUP.md   what each role can do; what every .env setting means
 ```
 
 ## Data sources and attribution
@@ -488,6 +534,11 @@ manage.py, ow.cmd    command line
 * Space-Track.org (18th Space Defense Squadron): GP catalogue, element-set history and decay messages, used under
   its user agreement with a personal account; requests stay within its published limits.
 * NASA GIBS: Blue Marble shaded relief and VIIRS Black Marble imagery on the globe (attribution shown on the globe).
+* JPL, *Keplerian Elements for Approximate Positions of the Major Planets* (E. M. Standish): the planets' positions on the
+  Solar system page.
+* Solar System Scope, https://www.solarsystemscope.com/textures/, CC BY 4.0, based on NASA imagery, resized for the web:
+  the planet textures on the Solar system page and the globe's cloud layer (`frontend/img/space/CREDITS.txt`).
+* three.js r160, loaded from jsDelivr, for the Solar system page.
 
 * CelesTrak (T.S. Kelso): GP element sets and SATCAT, https://celestrak.org. Downloaded at most every
   few hours, as CelesTrak asks.
